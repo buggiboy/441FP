@@ -1,0 +1,8 @@
+// fountain (F); position (x,y,z); max angle (degrees); velocity (min,max); lifespan (min,max); spawn rate (rate)
+//      start at position and shoot upwards with an offset of max angle and then fall down
+// rain (R); position (x,y,z); range (r); wind speed (min,max); wind direction (degrees); wind bounding box (x1,y1,z1,x2,y2,z2); spawn rate (rate)
+//      start at position+- range and fall down (if in the wind bounding box be blown in the  direction by the speed)
+// butterflies (B); starting velocity (min, max); seperation (s); alignment (a); cohesion (c); bounding  box (x1,y1,z1,x2,y2,z2); what is close (n); amount (n)
+//      start with all butterflies in the starting position and range, then they are free to roam repeating in the bounding box
+
+F,0,0,0,15,1.15,1.25,20,30,60

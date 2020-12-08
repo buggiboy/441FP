@@ -5,6 +5,7 @@ uniform mat4 viewMtx;
 uniform mat4 projectionMtx;
 uniform mat4 mvpMtx;
 uniform mat4 normalMtx;
+uniform vec3 blackHolePos;
 
 layout(location = 0) in vec3 vPos;
 layout(location = 1) in vec3 vNormal;
@@ -18,7 +19,9 @@ layout(location = 5) out vec3 halfwayVec;
 const vec3 LIGHT_POSITION = vec3( 10.0, 10.0, 10.0 );
 
 void main() {
-    gl_Position = mvpMtx * vec4(vPos, 1.0);
+    vec3 posMod = 1/length(vPos - blackHolePos) * normalize(vPos - blackHolePos);
+    vec3 actualPos = vPos + posMod;
+    gl_Position = mvpMtx * vec4(actualPos, 1.0) ;
     texCoord = vTexCoord;
 
     vec3 cameraVec = normalize( -(modelviewMtx*vec4(vPos,1.0)).xyz );

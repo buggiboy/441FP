@@ -23,12 +23,16 @@
 
 #include <cstdio>				        // for printf functionality
 #include <cstdlib>				        // for exit functionality
+#include <chrono>                       // for high resolution time
 
-#include <CSCI441/FramebufferUtils.hpp> // assists with FBO error checking
-#include <CSCI441/modelLoader.hpp>      // load OBJ files
+#include <CSCI441/materials.hpp>        // our pre-defined material properties
 #include <CSCI441/OpenGLUtils.hpp>      // prints OpenGL information
+#include <CSCI441/objects.hpp>          // draws 3D objects
 #include <CSCI441/ShaderProgram.hpp>    // wrapper class for GLSL shader programs
 #include <CSCI441/TextureUtils.hpp>     // convenience for loading textures
+
+#include "LightingShaderStructs.h"
+#include "ParticleSystem.h"
 
 //***********************************************************************************************************************************************************
 //
@@ -42,6 +46,9 @@ GLboolean controlDown;                  // if the control button was pressed whe
 GLboolean leftMouseDown;                // if the mouse left button is pressed
 glm::vec2 mousePosition;                // current mouse position
 
+GLuint lightType;                       // type of the light - 0 point 1 directional 2 spot
+bool drawBoundings;
+
 // keep track of all our camera information
 struct CameraParameters {
     glm::vec3 cameraAngles;             // cameraAngles --> x = theta, y = phi, z = radius
@@ -51,70 +58,90 @@ struct CameraParameters {
     glm::vec3 upVector;                 // the upVector of our camera
 } arcballCam;
 
+// time information
+unsigned long long now;
+
 // all drawing information
-const GLuint NUM_VAOS = 8;
 const struct VAO_IDS {
-    const GLuint SKYBOX = 0;            // skybox is in order 0-5 (Back, Right, Front, Left, Bottom, Top)
-    const GLuint PLATFORM = 6;
-    const GLuint TEXTURED_QUAD = 7;
+    GLuint PARTICLE_SYSTEM = 0;
 } VAOS;
+const GLuint NUM_VAOS = 1;
 GLuint vaos[NUM_VAOS];                  // an array of our VAO descriptors
 GLuint vbos[NUM_VAOS];                  // an array of our VBO descriptors
 GLuint ibos[NUM_VAOS];                  // an array of our IBO descriptors
 
-// skybox information
-GLuint skyboxHandles[6];                // all of our skybox texture handles in order 0-5 (Back, Right, Front, Left, Bottom, Top)
+// Particle System
+ParticleSystem particleSystem;
 
-// platform information
-GLuint platformTextureHandle;           // handle for the platform texture
+// point sprite information
+const GLuint NUM_SPRITES = 75;          // the number of sprites to draw
+const GLfloat MAX_BOX_SIZE = 10;        // our sprites exist within a box of this size
+glm::vec3* spriteLocations = nullptr;   // the (x,y,z) location of each sprite
+GLushort* spriteIndices = nullptr;      // the order to draw the sprites in
+GLfloat* distances = nullptr;           // will be used to store the distance to the camera
+GLuint spriteTextureHandle;             // the texture to apply to the sprite
+GLfloat snowglobeAngle;                 // rotates all of our snowflakes
 
-CSCI441::ModelLoader* townModel = nullptr;  // stores OBJ model
-
-// framebuffer information
-GLuint fbo, rbo;                        // handles for the FBO and RBO
-const GLint FBO_WIDTH = 1024, FBO_HEIGHT = 1024;  // FBO dimensions
-GLuint fboTextureHandle;        // texture handle to render the FBO to
-
-// Texture shader program for skybox and ground
-CSCI441::ShaderProgram *textureShaderProgram = nullptr;
-struct TextureShaderProgramUniforms {
-    GLint mvpMtx;                       // the MVP Matrix to apply
-    GLint tex;                          // the texture to apply
-} textureShaderProgramUniforms;
-struct TextureShaderProgramAttributes {
+// Billboard shader program
+CSCI441::ShaderProgram *billboardShaderProgram = nullptr;
+struct BillboardShaderProgramUniforms {
+    GLint mvMatrix;                     // the ModelView Matrix to apply
+    GLint projMatrix;                   // the Projection Matrix to apply
+    GLint image;                        // the texture to bind
+} billboardShaderProgramUniforms;
+struct BillboardShaderProgramAttributes {
     GLint vPos;                         // the vertex position
-    GLint vTexCoord;                    // the vertex texture coordinate
-} textureShaderProgramAttributes;
+} billboardShaderProgramAttributes;
+ParticleShaderUniforms fountainShaderUniforms;
+ParticleShaderAttributes fountainShaderAttributes;
 
-// Phong shader program for object model
-CSCI441::ShaderProgram *modelPhongShaderProgram = nullptr;
-struct ModelPhongShaderProgramUniforms {
-    GLint modelViewMtx;                 // the ModelView Matrix to apply
-    GLint viewMtx;                      // the View Matrix to apply
-    GLint mvpMtx;                       // The MVP Matrix to apply
-    GLint normalMtx;                    // the Normal Matrix to apply
-    GLint materialDiffuse;              // the Material Diffuse property to apply
-    GLint materialSpecular;             // the Material Specular property to apply
-    GLint materialAmbient;              // the Material Ambient property to apply
-    GLint materialShininess;            // the Material Shininess property to apply
-    GLint txtr;                         // the texture to apply
-} modelPhongShaderProgramUniforms;
-struct ModelPhongShaderProgramAttributes {
-    GLint vPos;                         // the vertex position
-    GLint vNormal;                      // the vertex normal
-    GLint vTextureCoord;                // the vertex texture coordinate
-} modelPhongShaderProgramAttributes;
+CSCI441::ShaderProgram *flatShaderProgram = nullptr;
+FlatShaderProgramUniforms flatShaderProgramUniforms;
+FlatShaderProgramAttributes flatShaderProgramAttributes;
 
-// Postprocessing shader program for after effects
-CSCI441::ShaderProgram *postprocessingShaderProgram = nullptr;
-struct PostprocessingShaderProgramUniforms {
-    GLint projectionMtx;                // the Projection Matrix to apply
-    GLint fbo;                          // the FBO texture to apply
-} postprocessingShaderProgramUniforms;
-struct PostprocessingShaderProgramAttributes {
-    GLint vPos;                         // the vertex position
-    GLint vTextureCoord;                // the vertex texture coordinate
-} postprocessingShaderProgramAttributes;
+// skybox and ground stuff
+GLuint platformVAO, platformVBOs[2];    // the ground platform everything is hovering over
+GLuint skyboxFrontVAO, skyboxFrontVBOs[2], skyboxSideVAO, skyboxSideVBOs[2], skyboxTopVAO, skyboxTopVBOs[2];
+GLuint skyboxSidesTextureHandle;
+GLuint skyboxTopTextureHandle;
+
+// gourad with phong illumination shader program
+CSCI441::ShaderProgram *gouradShaderProgram = nullptr;
+struct GouradShaderProgramUniforms {
+    GLint mvpMatrix;                    // the MVP Matrix to apply
+    GLint modelMatrix;                  // model matrix
+    GLint normalMtx;                    // normal matrix
+    GLint eyePos;                       // camera position
+    GLint lightPos;                     // light position - used for point/spot
+    GLint lightDir;                     // light direction - used for directional/spot
+    GLint lightCutoff;                  // light cone angle - used for spot
+    GLint lightColor;                   // color of the light
+    GLint lightType;                    // type of the light - 0 point 1 directional 2 spot
+    GLint materialDiffColor;            // material diffuse color
+    GLint materialSpecColor;            // material specular color
+    GLint materialShininess;            // material shininess factor
+    GLint materialAmbColor;             // material ambient color
+} gouradShaderProgramUniforms;
+struct GouradShaderProgramAttributes {
+    GLint vPos;                         // position of our vertex
+    GLint vNormal;                      // normal for the vertex
+} gouradShaderProgramAttributes;
+
+// keep track of our texture shader program
+CSCI441::ShaderProgram *texShaderProgram = nullptr;
+struct TexShaderProgramUniforms {
+    GLint mvpMatrix;                    // the MVP Matrix to apply
+    // TODO #11 add a uniform location for our texture map
+    GLint textureMap;
+
+} texShaderProgramUniforms;
+struct TexShaderProgramAttributes {
+    GLint vPos;                         // position of our vertex
+    // TODO #10 add an attribute location for our texture coordinate
+    GLint texCoordIn;
+
+} texShaderProgramAttributes;
+
 
 //***********************************************************************************************************************************************************
 //
@@ -134,7 +161,7 @@ void updateCameraDirection() {
 
     // do not let our camera get too close or too far away
     if( arcballCam.cameraAngles.z <= 2.0f )  arcballCam.cameraAngles.z = 2.0f;
-    if( arcballCam.cameraAngles.z >= 35.0f ) arcballCam.cameraAngles.z = 35.0f;
+    if( arcballCam.cameraAngles.z >= 30.0f ) arcballCam.cameraAngles.z = 30.0f;
 
     // update the new direction to the camera
     arcballCam.camDir.x =  sinf( arcballCam.cameraAngles.x ) * sinf( arcballCam.cameraAngles.y );
@@ -148,41 +175,50 @@ void updateCameraDirection() {
 // computeAndSendTransformationMatrices() //////////////////////////////////////////////////////////////////////////////
 /// \desc
 /// This function sends the matrix uniforms to a given shader location.  Precomputes the ModelView Matrix
-/// \param MODEL_MATRIX - current Model Matrix
-/// \param VIEW_MATRIX - current View Matrix
-/// \param PROJECTION_MATRIX - current Projection Matrix
-/// \param MODEL_MTX_LOC - location within currently bound shader to send the Model Matrix
-/// \param VIEW_MTX_LOC - location within currently bound shader to send the View Matrix
-/// \param PROJECTION_MTX_LOC - location within currently bound shader to send the Projection Matrix
-/// \param MODELVIEW_MTX_LOC - location within currently bound shader to send the ModelView Matrix
-/// \param VIEWPROJECTION_MTX_LOC - location within currently bound shader to send the ViewProjection Matrix
-/// \param MVP_MTX_LOC - location within currently bound shader to send the MVP Matrix
-/// \param NORMAL_MTX_LOC - location within currently bound shader to send the Normal Matrix
+/// \param modelMatrix - current Model Matrix
+/// \param viewMatrix - current View Matrix
+/// \param projectionMatrix - current Projection Matrix
+/// \param mvMtxLocation - location within currently bound shader to send the ModelView Matrix
+/// \param projMtxLocation - location within currently bound shader to send the Projection Matrix
 // //////////////////////////////////////////////////////////////////////////////
-void computeAndSendTransformationMatrices( const glm::mat4 MODEL_MATRIX, const glm::mat4 VIEW_MATRIX, const glm::mat4 PROJECTION_MATRIX,
-                                           const GLint MODEL_MTX_LOC, const GLint VIEW_MTX_LOC, const GLint PROJECTION_MTX_LOC,
-                                           const GLint MODELVIEW_MTX_LOC, const GLint VIEWPROJECTION_MTX_LOC,
-                                           const GLint MVP_MTX_LOC,
-                                           const GLint NORMAL_MTX_LOC) {
-    glm::mat4 mvMatrix = VIEW_MATRIX * MODEL_MATRIX;
-    glm::mat4 vpMatrix = PROJECTION_MATRIX * VIEW_MATRIX;
-    glm::mat4 mvpMatrix = PROJECTION_MATRIX * mvMatrix;
-    glm::mat4 normalMatrix = glm::transpose( glm::inverse( mvMatrix ) );
+void computeAndSendTransformationMatrices(glm::mat4 modelMatrix, glm::mat4 viewMatrix, glm::mat4 projectionMatrix,
+                                          GLint mvMtxLocation, GLint projMtxLocation) {
+    glm::mat4 mvMatrix = viewMatrix * modelMatrix;
 
-    glUniformMatrix4fv( MODEL_MTX_LOC,          1, GL_FALSE, &MODEL_MATRIX[0][0]      );
-    glUniformMatrix4fv( VIEW_MTX_LOC,           1, GL_FALSE, &VIEW_MATRIX[0][0]       );
-    glUniformMatrix4fv( PROJECTION_MTX_LOC,     1, GL_FALSE, &PROJECTION_MATRIX[0][0] );
-    glUniformMatrix4fv( MODELVIEW_MTX_LOC,      1, GL_FALSE, &mvMatrix[0][0]          );
-    glUniformMatrix4fv( VIEWPROJECTION_MTX_LOC, 1, GL_FALSE, &vpMatrix[0][0]          );
-    glUniformMatrix4fv( MVP_MTX_LOC,            1, GL_FALSE, &mvpMatrix[0][0]         );
-    glUniformMatrix4fv( NORMAL_MTX_LOC,         1, GL_FALSE, &normalMatrix[0][0]      );
+    glUniformMatrix4fv(mvMtxLocation, 1, GL_FALSE, &mvMatrix[0][0]);
+    glUniformMatrix4fv(projMtxLocation, 1, GL_FALSE, &projectionMatrix[0][0]);
+}
+
+/// computeAndSendTransformationMatrices() //////////////////////////////////////
+///
+/// This function sends the matrix uniforms to a given shader location.
+///
+////////////////////////////////////////////////////////////////////////////////
+void computeAndSendTransformationMatrices(glm::mat4 modelMatrix, glm::mat4 viewMatrix, glm::mat4 projectionMatrix,
+                                          GLint mvpMtxLocation, GLint modelMtxLocation = -1, GLint normalMtxLocation = -1) {
+    glm::mat4 mvpMatrix = projectionMatrix * viewMatrix * modelMatrix;
+    glm::mat3 normalMatrix = glm::mat3( glm::transpose( glm::inverse(modelMatrix) ) );
+
+    glUniformMatrix4fv(mvpMtxLocation, 1, GL_FALSE, &mvpMatrix[0][0]);
+    glUniformMatrix4fv(modelMtxLocation, 1, GL_FALSE, &modelMatrix[0][0]);
+    glUniformMatrix3fv(normalMtxLocation, 1, GL_FALSE, &normalMatrix[0][0]);
+}
+
+
+// randNumber() /////////////////////////////////////////////////////////////////////////////
+/// \dexc generates a random float between [-max, max]
+/// \param max - lower & upper bound to generate value between
+/// \return float within range [-max, max]
+// //////////////////////////////////////////////////////////////////////////////
+GLfloat randNumber( GLfloat max ) {
+    return rand() / (GLfloat)RAND_MAX * max * 2.0 - max;
 }
 
 //***********************************************************************************************************************************************************
 //
 // Event Callbacks
 
-// /////////////////////////////////////////////////////////////////////////////
+// error_callback() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///		We will register this function as GLFW's error callback.
 ///	When an error within GLFW occurs, GLFW will tell us by calling
@@ -194,7 +230,7 @@ static void error_callback(int error, const char* description) {
     fprintf(stderr, "[ERROR]: (%d) %s\n", error, description);
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// key_callback() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///		We will register this function as GLFW's keypress callback.
 ///	Responds to key presses and key releases
@@ -207,13 +243,21 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
             case GLFW_KEY_ESCAPE:
                 glfwSetWindowShouldClose( window, GLFW_TRUE );
                 break;
-
+            case GLFW_KEY_3:    // spot light
+                lightType = key - GLFW_KEY_1;
+                // send the light type to the shader
+                gouradShaderProgram->useProgram();
+                glUniform1i(gouradShaderProgramUniforms.lightType, lightType);
+                break;
+            case GLFW_KEY_B:
+                drawBoundings = !drawBoundings;
+                break;
             default: break;
         }
     }
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// mouse_button_callback() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///		We will register this function as GLFW's mouse button callback.
 ///	Responds to mouse button presses and mouse button releases.  Keeps track if
@@ -234,7 +278,7 @@ static void mouse_button_callback(GLFWwindow* window, int button, int action, in
     }
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// cursor_callback() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///		We will register this function as GLFW's cursor movement callback.
 ///	Responds to mouse movement.  When active motion is used with the left
@@ -272,7 +316,7 @@ static void cursor_callback( GLFWwindow* window, double xPos, double yPos ) {
     }
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// scroll_callback() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///		We will register this function as GLFW's scroll wheel callback.
 ///	Responds to movement of the scroll where.  Allows zooming of the arcball
@@ -289,11 +333,11 @@ static void scroll_callback(GLFWwindow* window, double xOffset, double yOffset )
 //
 // Setup Functions
 
-// /////////////////////////////////////////////////////////////////////////////
+// setupGLFW() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///		Used to setup everything GLFW related.  This includes the OpenGL context
 ///	and our window.
-///
+/// \return window - the window associated with the new context
 // /////////////////////////////////////////////////////////////////////////////
 GLFWwindow* setupGLFW() {
     // set what function to use when registering errors
@@ -314,10 +358,9 @@ GLFWwindow* setupGLFW() {
     glfwWindowHint( GLFW_CONTEXT_VERSION_MAJOR, 4 );		                // request OpenGL 4.X context
     glfwWindowHint( GLFW_CONTEXT_VERSION_MINOR, 1 );		                // request OpenGL X.1 context
     glfwWindowHint( GLFW_DOUBLEBUFFER, GLFW_TRUE );                             // request double buffering
-    glfwWindowHint( GLFW_RESIZABLE, GLFW_FALSE );                               // do not allow the window to be resized
 
     // create a window for a given size, with a given title
-    GLFWwindow *window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Lab12: Framebuffer Objects", nullptr, nullptr );
+    GLFWwindow *window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Lab10: Geometry Shaders", nullptr, nullptr );
     if( !window ) {						                                        // if the window could not be created, NULL is returned
         fprintf( stderr, "[ERROR]: GLFW Window could not be created\n" );
         glfwTerminate();
@@ -337,22 +380,24 @@ GLFWwindow* setupGLFW() {
     return window;										                        // return the window that was created
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// setupOpenGL() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Used to setup everything OpenGL related.
 ///
 // /////////////////////////////////////////////////////////////////////////////
 void setupOpenGL() {
-    glEnable( GL_DEPTH_TEST );					                    // enable depth testing
-    glDepthFunc( GL_LESS );							                // use less than depth test
+    glEnable( GL_DEPTH_TEST );					                                // enable depth testing
+    glDepthFunc( GL_LESS );							                            // use less than depth test
 
-    glEnable(GL_BLEND);									            // enable blending
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);	            // use one minus blending equation
+    glEnable(GL_BLEND);									                        // enable blending
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);	                        // use one minus blending equation
 
-    glClearColor( 0.0f, 0.0f, 0.0f, 1.0f );	// clear the frame buffer to black
+    glClearColor( 0.0f, 0.0f, 0.0f, 1.0f );	            // clear the frame buffer to black
+
+    glPointSize( 4.0f );                                                    // make our points bigger (if supported)
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// setupGLEW() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Used to initialize GLEW
 ///
@@ -372,240 +417,226 @@ void setupGLEW() {
     }
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// setupShaders() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Registers our Shader Programs and query locations
 ///          of uniform/attribute inputs
 ///
 // /////////////////////////////////////////////////////////////////////////////
 void setupShaders() {
-    textureShaderProgram = new CSCI441::ShaderProgram( "shaders/textureShader.v.glsl", "shaders/textureShader.f.glsl" );
-    textureShaderProgramUniforms.mvpMtx                 = textureShaderProgram->getUniformLocation( "mvpMtx" );
-    textureShaderProgramUniforms.tex                    = textureShaderProgram->getUniformLocation( "tex" );
-    textureShaderProgramAttributes.vPos			        = textureShaderProgram->getAttributeLocation( "vPos" );
-    textureShaderProgramAttributes.vTexCoord            = textureShaderProgram->getAttributeLocation( "vTexCoord" );
-    textureShaderProgram->useProgram();
-    glUniform1i(textureShaderProgramUniforms.tex, 0);
+    // stuff from lab 8 for skybox and ground
+    gouradShaderProgram = new CSCI441::ShaderProgram( "shaders/gouradShader.v.glsl", "shaders/gouradShader.f.glsl" );
+    gouradShaderProgramUniforms.mvpMatrix           = gouradShaderProgram->getUniformLocation( "mvpMatrix");
+    gouradShaderProgramUniforms.modelMatrix         = gouradShaderProgram->getUniformLocation("modelMatrix");
+    gouradShaderProgramUniforms.normalMtx           = gouradShaderProgram->getUniformLocation("normalMtx");
+    gouradShaderProgramUniforms.eyePos              = gouradShaderProgram->getUniformLocation("eyePos");
+    gouradShaderProgramUniforms.lightPos            = gouradShaderProgram->getUniformLocation("lightPos");
+    gouradShaderProgramUniforms.lightDir            = gouradShaderProgram->getUniformLocation("lightDir");
+    gouradShaderProgramUniforms.lightCutoff         = gouradShaderProgram->getUniformLocation("lightCutoff");
+    gouradShaderProgramUniforms.lightColor          = gouradShaderProgram->getUniformLocation("lightColor");
+    gouradShaderProgramUniforms.lightType           = gouradShaderProgram->getUniformLocation("lightType");
+    gouradShaderProgramUniforms.materialDiffColor   = gouradShaderProgram->getUniformLocation("materialDiffColor");
+    gouradShaderProgramUniforms.materialSpecColor   = gouradShaderProgram->getUniformLocation("materialSpecColor");
+    gouradShaderProgramUniforms.materialShininess   = gouradShaderProgram->getUniformLocation("materialShininess");
+    gouradShaderProgramUniforms.materialAmbColor    = gouradShaderProgram->getUniformLocation("materialAmbColor");
+    gouradShaderProgramAttributes.vPos              = gouradShaderProgram->getAttributeLocation("vPos");
+    gouradShaderProgramAttributes.vNormal           = gouradShaderProgram->getAttributeLocation("vNormal");
 
-    modelPhongShaderProgram = new CSCI441::ShaderProgram( "shaders/texturingPhong.v.glsl", "shaders/texturingPhong.f.glsl" );
-    modelPhongShaderProgramUniforms.modelViewMtx 	    = modelPhongShaderProgram->getUniformLocation( "modelviewMtx" );
-    modelPhongShaderProgramUniforms.viewMtx 		    = modelPhongShaderProgram->getUniformLocation( "viewMtx" );
-    modelPhongShaderProgramUniforms.mvpMtx              = modelPhongShaderProgram->getUniformLocation( "mvpMtx" );
-    modelPhongShaderProgramUniforms.normalMtx 	        = modelPhongShaderProgram->getUniformLocation( "normalMtx" );
-    modelPhongShaderProgramUniforms.materialDiffuse     = modelPhongShaderProgram->getUniformLocation( "materialDiffuse" );
-    modelPhongShaderProgramUniforms.materialSpecular    = modelPhongShaderProgram->getUniformLocation( "materialSpecular" );
-    modelPhongShaderProgramUniforms.materialAmbient     = modelPhongShaderProgram->getUniformLocation( "materialAmbient" );
-    modelPhongShaderProgramUniforms.materialShininess   = modelPhongShaderProgram->getUniformLocation( "materialShininess" );
-    modelPhongShaderProgramUniforms.txtr 	            = modelPhongShaderProgram->getUniformLocation( "txtr" );
-    modelPhongShaderProgramAttributes.vPos 	            = modelPhongShaderProgram->getAttributeLocation( "vPos" );
-    modelPhongShaderProgramAttributes.vNormal 	        = modelPhongShaderProgram->getAttributeLocation( "vNormal" );
-    modelPhongShaderProgramAttributes.vTextureCoord     = modelPhongShaderProgram->getAttributeLocation( "vTexCoord" );
-    modelPhongShaderProgram->useProgram();
-    glUniform1i(modelPhongShaderProgramUniforms.txtr, 0);
+    texShaderProgram = new CSCI441::ShaderProgram( "shaders/lab06.v.glsl", "shaders/lab06.f.glsl" );
+    texShaderProgramUniforms.mvpMatrix   = texShaderProgram->getUniformLocation("mvpMatrix");
+    texShaderProgramAttributes.vPos      = texShaderProgram->getAttributeLocation("vPos");
+    // TODO #12 lookup the uniform and attribute location
+    texShaderProgramUniforms.textureMap  = texShaderProgram->getUniformLocation("textureMap");
+    texShaderProgramAttributes.texCoordIn= texShaderProgram->getAttributeLocation("texCoordIn");
 
-    postprocessingShaderProgram = new CSCI441::ShaderProgram( "shaders/grayscale.v.glsl", "shaders/grayscale.f.glsl" );
-    postprocessingShaderProgramUniforms.projectionMtx	= postprocessingShaderProgram->getUniformLocation( "projectionMtx" );
-    postprocessingShaderProgramUniforms.fbo		        = postprocessingShaderProgram->getUniformLocation( "fbo" );
-    postprocessingShaderProgramAttributes.vPos		    = postprocessingShaderProgram->getAttributeLocation( "vPos" );
-    postprocessingShaderProgramAttributes.vTextureCoord = postprocessingShaderProgram->getAttributeLocation( "vTexCoord" );
-    postprocessingShaderProgram->useProgram();
-    glUniform1i(postprocessingShaderProgramUniforms.fbo, 0);
+
+    // LOOKHERE #1
+    billboardShaderProgram = new CSCI441::ShaderProgram( "shaders/billboardQuadShader.v.glsl",
+                                                         "shaders/billboardQuadShader.g.glsl",
+                                                         "shaders/billboardQuadShader.f.glsl" );
+    billboardShaderProgramUniforms.mvMatrix            = billboardShaderProgram->getUniformLocation( "mvMatrix");
+    billboardShaderProgramUniforms.projMatrix          = billboardShaderProgram->getUniformLocation( "projMatrix");
+    billboardShaderProgramUniforms.image               = billboardShaderProgram->getUniformLocation( "image");
+    billboardShaderProgramAttributes.vPos              = billboardShaderProgram->getAttributeLocation( "vPos");
+
+    billboardShaderProgram->useProgram();
+    glUniform1i(billboardShaderProgramUniforms.image, 0);
+
+    fountainShaderUniforms.mvMatrix            = billboardShaderProgram->getUniformLocation( "mvMatrix");
+    fountainShaderUniforms.projMatrix          = billboardShaderProgram->getUniformLocation( "projMatrix");
+    fountainShaderUniforms.image               = billboardShaderProgram->getUniformLocation( "image");
+    fountainShaderAttributes.vPos              = billboardShaderProgram->getAttributeLocation( "vPos");
+    fountainShaderAttributes.lifespan          = billboardShaderProgram->getAttributeLocation("lifespan");
+
+    particleSystem.setParticleShaderUandA(*billboardShaderProgram, fountainShaderUniforms, fountainShaderAttributes);
+
+    flatShaderProgram = new CSCI441::ShaderProgram( "shaders/flatShader.v.glsl", "shaders/flatShader.f.glsl" );
+    flatShaderProgramUniforms.mvpMatrix             = flatShaderProgram->getUniformLocation("mvpMatrix");
+    flatShaderProgramUniforms.color                 = flatShaderProgram->getUniformLocation("color");
+    flatShaderProgramAttributes.vPos                = flatShaderProgram->getAttributeLocation("vPos");
+
+    particleSystem.setFlatShaderUandA(*flatShaderProgram,flatShaderProgramUniforms,flatShaderProgramAttributes);
+
+    texShaderProgram->useProgram();                         // set our shader program to be active
+    // TODO #13 set the texture map uniform
+    glUniform1i(texShaderProgramUniforms.textureMap, 0);
+
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// setupBuffers() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Create our VAOs & VBOs. Send vertex assets to the GPU for future rendering
 ///
 // /////////////////////////////////////////////////////////////////////////////
 void setupBuffers() {
 
-    // generate ALL VAOs, VBOs, IBOs at once
-    glGenVertexArrays( NUM_VAOS, vaos );
-    glGenBuffers( NUM_VAOS, vbos );
-    glGenBuffers( NUM_VAOS, ibos );
+    // ground
+    // ground vbos
+    struct Vertex {
+        float x, y, z;
+        float nx, ny, nz;
+        float s, t;
+    };
 
-    // ////////////////////////////////////////
-    //
-    // Model
+    Vertex platformVertices[4] = {
+            { -0.5f, 0.0f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f }, // 0 - BL
+            {  0.5f, 0.0f, -0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f }, // 1 - BR
+            { -0.5f, 0.0f,  0.5f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f }, // 2 - TL
+            {  0.5f, 0.0f,  0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f }  // 3 - TR
+    };
 
-    townModel = new CSCI441::ModelLoader();
-    townModel->loadModelFile( "assets/models/medstreet/medstreet.obj" );
+    unsigned short platformIndices[4] = { 0, 1, 2, 3 };
 
-    // ///////////////////////////////////////
-    //
-    // PLATFORM
+    glGenVertexArrays( 1, &platformVAO );
+    glBindVertexArray( platformVAO );
 
+    glGenBuffers( 2, platformVBOs );
+
+    glBindBuffer( GL_ARRAY_BUFFER, platformVBOs[0] );
+    glBufferData( GL_ARRAY_BUFFER, sizeof( platformVertices ), platformVertices, GL_STATIC_DRAW );
+
+    glEnableVertexAttribArray( gouradShaderProgramAttributes.vPos );
+    glVertexAttribPointer( gouradShaderProgramAttributes.vPos, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*) 0 );
+
+    glEnableVertexAttribArray( gouradShaderProgramAttributes.vNormal );
+    glVertexAttribPointer( gouradShaderProgramAttributes.vNormal, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(3 * sizeof(float)) );
+
+    glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, platformVBOs[1] );
+    glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeof( platformIndices ), platformIndices, GL_STATIC_DRAW );
+
+    fprintf( stdout, "[INFO]: platform read in with VAO %d\n", platformVAO );
+
+
+    // skybox
+    // skybox vbos
     struct VertexTextured {
-        glm::vec3 pos;
-        glm::vec2 texCoord;
+        float x, y, z;
+        // TODO #14 add texture coordinates to our vertex struct
+        float s,t;
+
+    };
+    VertexTextured skyBoxFrontVertices[4] = {
+            { -1.0f, -1.0f,  1.0f, 0.0f, 0.0f }, // 0 - BL
+            {  1.0f, -1.0f,  1.0f, 1.0f, 0.0f }, // 1 - BR
+            { -1.0f,  1.0f,  1.0f, 0.0f, 1.0f }, // 2 - TL
+            {  1.0f,  1.0f,  1.0f, 1.0f, 1.0f }  // 3 - TR
+    };
+    VertexTextured skyBoxSideVertices[4] = {
+            {  1.0f, -1.0f,  -1.0f, 0.0f, 0.0f }, // 0 - BL
+            {  1.0f, -1.0f,  1.0f, 1.0f, 0.0f }, // 1 - BR
+            {  1.0f,  1.0f,  -1.0f, 0.0f, 1.0f }, // 2 - TL
+            {  1.0f,  1.0f,  1.0f, 1.0f, 1.0f }  // 3 - TR
+    };
+    VertexTextured skyBoxTopVertices[4] = {
+            { -1.0f,  1.0f, -1.0f, 0.0f, 0.0f }, // 0 - BL
+            {  1.0f,  1.0f, -1.0f, 1.0f, 0.0f }, // 1 - BR
+            { -1.0f,  1.0f,  1.0f, 0.0f, 1.0f }, // 2 - TL
+            {  1.0f,  1.0f,  1.0f, 1.0f, 1.0f }  // 3 - TR
     };
 
-    const GLfloat PLATFORM_SIZE = 20.0f;
+    unsigned short skyBoxSidesIndices[4] = { 0, 1, 2, 3 };
+    unsigned short skyBoxFrontIndices[4] = { 0, 1, 2, 3 };
+    unsigned short skyBoxTopIndices[4] = { 0, 1, 2, 3 };
 
-    const VertexTextured PLATFORM_VERTICES[4] = {
-            {glm::vec3(-PLATFORM_SIZE,  0.0f, -PLATFORM_SIZE),  glm::vec2(0.0f,  0.0f) }, // 0 - BL
-            {glm::vec3( PLATFORM_SIZE,  0.0f, -PLATFORM_SIZE),  glm::vec2(1.0f,  0.0f) }, // 1 - BR
-            {glm::vec3(-PLATFORM_SIZE,  0.0f,  PLATFORM_SIZE),  glm::vec2(0.0f, -1.0f) }, // 2 - TL
-            {glm::vec3( PLATFORM_SIZE,  0.0f,  PLATFORM_SIZE),  glm::vec2(1.0f, -1.0f) }  // 3 - TR
-    };
+    glGenVertexArrays( 1, &skyboxFrontVAO );
+    glBindVertexArray( skyboxFrontVAO );
 
-    const unsigned short PLATFORM_INDICES[4] = {0, 1, 2, 3 };
+    glGenBuffers( 2, skyboxFrontVBOs );
 
-    glBindVertexArray( vaos[VAOS.PLATFORM] );
+    glBindBuffer( GL_ARRAY_BUFFER, skyboxFrontVBOs[0] );
+    glBufferData( GL_ARRAY_BUFFER, sizeof( skyBoxFrontVertices ), skyBoxFrontVertices, GL_STATIC_DRAW );
 
-    glBindBuffer( GL_ARRAY_BUFFER, vbos[VAOS.PLATFORM] );
-    glBufferData( GL_ARRAY_BUFFER, sizeof( PLATFORM_VERTICES ), PLATFORM_VERTICES, GL_STATIC_DRAW );
+    glEnableVertexAttribArray( texShaderProgramAttributes.vPos );
+    glVertexAttribPointer( texShaderProgramAttributes.vPos, 3, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*) 0 );
 
-    glEnableVertexAttribArray( textureShaderProgramAttributes.vPos );
-    glVertexAttribPointer( textureShaderProgramAttributes.vPos, 3, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*) 0 );
+    // Repeat TODO #16 to connect this VBO with our shader
+    glEnableVertexAttribArray( texShaderProgramAttributes.texCoordIn );
+    glVertexAttribPointer( texShaderProgramAttributes.texCoordIn, 2, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*)(sizeof(float) * 3) );
 
-    glEnableVertexAttribArray( textureShaderProgramAttributes.vTexCoord );
-    glVertexAttribPointer( textureShaderProgramAttributes.vTexCoord, 2, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*) (sizeof(GLfloat) * 3) );
+    glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, skyboxFrontVBOs[1] );
+    glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeof( skyBoxFrontIndices ), skyBoxFrontIndices, GL_STATIC_DRAW );
 
-    glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, ibos[VAOS.PLATFORM] );
-    glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeof( PLATFORM_INDICES ), PLATFORM_INDICES, GL_STATIC_DRAW );
+    fprintf( stdout, "[INFO]: quad read in with VAO %d\n\n", skyboxFrontVAO );
 
-    // ////////////////////////////////////////
-    //
-    // SKYBOX
+    glGenVertexArrays( 1, &skyboxSideVAO );
+    glBindVertexArray( skyboxSideVAO );
 
-    const GLfloat SKYBOX_SIZE = 40.0f;
-    const VertexTextured SKYBOX_VERTICES[6][4] = {
-            { // back
-                    {glm::vec3(-SKYBOX_SIZE, -SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2( 0.0f, 0.0f) }, // 0 - BL
-                    {glm::vec3(-SKYBOX_SIZE, -SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2(-1.0f, 0.0f) }, // 1 - BR
-                    {glm::vec3(-SKYBOX_SIZE,  SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2( 0.0f, 1.0f) }, // 2 - TL
-                    {glm::vec3(-SKYBOX_SIZE,  SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2(-1.0f, 1.0f) }  // 3 - TR
-            },
+    glGenBuffers( 2, skyboxSideVBOs );
 
-            { // right
-                    {glm::vec3(-SKYBOX_SIZE, -SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2( 0.0f, 0.0f) }, // 0 - BL
-                    {glm::vec3( SKYBOX_SIZE, -SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2(-1.0f, 0.0f) }, // 1 - BR
-                    {glm::vec3(-SKYBOX_SIZE,  SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2( 0.0f, 1.0f) }, // 2 - TL
-                    {glm::vec3( SKYBOX_SIZE,  SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2(-1.0f, 1.0f) }  // 3 - TR
-            },
+    glBindBuffer( GL_ARRAY_BUFFER, skyboxSideVBOs[0] );
+    glBufferData( GL_ARRAY_BUFFER, sizeof( skyBoxSideVertices ), skyBoxSideVertices, GL_STATIC_DRAW );
 
-            { // front
-                    { glm::vec3(SKYBOX_SIZE, -SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2(0.0f,  0.0f) }, // 0 - BL
-                    { glm::vec3(SKYBOX_SIZE, -SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2(1.0f,  0.0f) }, // 1 - BR
-                    { glm::vec3(SKYBOX_SIZE,  SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2(0.0f,  1.0f) }, // 2 - TL
-                    { glm::vec3(SKYBOX_SIZE,  SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2(1.0f,  1.0f) }  // 3 - TR
-            },
+    glEnableVertexAttribArray( texShaderProgramAttributes.vPos );
+    glVertexAttribPointer( texShaderProgramAttributes.vPos, 3, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*) 0 );
 
-            { // left
-                    {glm::vec3(-SKYBOX_SIZE, -SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2(0.0f,  0.0f) }, // 0 - BL
-                    {glm::vec3( SKYBOX_SIZE, -SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2(1.0f,  0.0f) }, // 1 - BR
-                    {glm::vec3(-SKYBOX_SIZE,  SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2(0.0f,  1.0f) }, // 2 - TL
-                    {glm::vec3( SKYBOX_SIZE,  SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2(1.0f,  1.0f) }  // 3 - TR
-            },
+    // Repeat TODO #16 to connect this VBO with our shader
+    glEnableVertexAttribArray( texShaderProgramAttributes.texCoordIn );
+    glVertexAttribPointer( texShaderProgramAttributes.texCoordIn, 2, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*)(sizeof(float) * 3) );
 
-            { // bottom
-                    {glm::vec3(-SKYBOX_SIZE, -SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2(0.0f,  0.0f) }, // 0 - BL
-                    {glm::vec3( SKYBOX_SIZE, -SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2(0.0f,  1.0f) }, // 1 - BR
-                    {glm::vec3(-SKYBOX_SIZE, -SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2(1.0f,  0.0f) }, // 2 - TL
-                    {glm::vec3( SKYBOX_SIZE, -SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2(1.0f,  1.0f) }  // 3 - TR
-            },
+    glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, skyboxSideVBOs[1] );
+    glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeof( skyBoxSidesIndices ), skyBoxSidesIndices, GL_STATIC_DRAW );
 
-            { // top
-                    {glm::vec3(-SKYBOX_SIZE,  SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2(-1.0f, 1.0f) }, // 0 - BL
-                    {glm::vec3( SKYBOX_SIZE,  SKYBOX_SIZE, -SKYBOX_SIZE), glm::vec2(-1.0f, 0.0f) }, // 1 - BR
-                    {glm::vec3(-SKYBOX_SIZE,  SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2( 0.0f, 1.0f) }, // 2 - TL
-                    {glm::vec3( SKYBOX_SIZE,  SKYBOX_SIZE,  SKYBOX_SIZE), glm::vec2( 0.0f, 0.0f) }  // 3 - TR
-            }
-    };
+    fprintf( stdout, "[INFO]: quad read in with VAO %d\n\n", skyboxSideVAO );
 
-    const unsigned short SKYBOX_INDICES[4] = {0, 1, 2, 3 };
+    glGenVertexArrays( 1, &skyboxTopVAO );
+    glBindVertexArray( skyboxTopVAO );
 
-    for( int i = 0; i < 6; i++ ) {
-        glBindVertexArray( vaos[VAOS.SKYBOX + i] );
+    glGenBuffers( 2, skyboxTopVBOs );
 
-        glBindBuffer( GL_ARRAY_BUFFER, vbos[VAOS.SKYBOX + i] );
-        glBufferData( GL_ARRAY_BUFFER, sizeof(SKYBOX_VERTICES[i]), SKYBOX_VERTICES[i], GL_STATIC_DRAW );
+    glBindBuffer( GL_ARRAY_BUFFER, skyboxTopVBOs[0] );
+    glBufferData( GL_ARRAY_BUFFER, sizeof( skyBoxTopVertices ), skyBoxTopVertices, GL_STATIC_DRAW );
 
-        glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, ibos[VAOS.SKYBOX + i] );
-        glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeof(SKYBOX_INDICES), SKYBOX_INDICES, GL_STATIC_DRAW );
+    glEnableVertexAttribArray( texShaderProgramAttributes.vPos );
+    glVertexAttribPointer( texShaderProgramAttributes.vPos, 3, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*) 0 );
 
-        glEnableVertexAttribArray( textureShaderProgramAttributes.vPos );
-        glVertexAttribPointer( textureShaderProgramAttributes.vPos, 3, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*) 0 );
+    // Repeat TODO #16 to connect this VBO with our shader
+    glEnableVertexAttribArray( texShaderProgramAttributes.texCoordIn );
+    glVertexAttribPointer( texShaderProgramAttributes.texCoordIn, 2, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*)(sizeof(float) * 3) );
 
-        glEnableVertexAttribArray( textureShaderProgramAttributes.vTexCoord );
-        glVertexAttribPointer( textureShaderProgramAttributes.vTexCoord, 2, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*) (sizeof(GLfloat) * 3) );
-    }
+    glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, skyboxTopVBOs[1] );
+    glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeof( skyBoxTopIndices ), skyBoxTopIndices, GL_STATIC_DRAW );
 
-    // ////////////////////////////////////////
-    //
-    // TEXTURED QUAD - LOOKHERE #1
+    fprintf( stdout, "[INFO]: quad read in with VAO %d\n\n", skyboxTopVAO );
 
-    const VertexTextured TEXTURED_QUAD_VERTICES[4] = {
-            { glm::vec3(-1.0f, -1.0f, 0.0f), glm::vec2(0.0f,  0.0f) }, // 0 - BL
-            { glm::vec3( 1.0f, -1.0f, 0.0f), glm::vec2(1.0f,  0.0f) }, // 1 - BR
-            { glm::vec3(-1.0f,  1.0f, 0.0f), glm::vec2(0.0f,  1.0f) }, // 2 - TL
-            { glm::vec3( 1.0f,  1.0f, 0.0f), glm::vec2(1.0f,  1.0f) }  // 3 - TR
-    };
+    particleSystem.initialize(glm::vec3(0,0,0), 1);
 
-    const unsigned short TEXTURED_QUAD_INDICES[4] = {0, 1, 2, 3 };
 
-    glBindVertexArray( vaos[VAOS.TEXTURED_QUAD] );
-
-    glBindBuffer( GL_ARRAY_BUFFER, vbos[VAOS.TEXTURED_QUAD] );
-    glBufferData( GL_ARRAY_BUFFER, sizeof(TEXTURED_QUAD_VERTICES), TEXTURED_QUAD_VERTICES, GL_STATIC_DRAW );
-
-    glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, ibos[VAOS.TEXTURED_QUAD] );
-    glBufferData( GL_ELEMENT_ARRAY_BUFFER, sizeof(TEXTURED_QUAD_INDICES), TEXTURED_QUAD_INDICES, GL_STATIC_DRAW );
-
-    glEnableVertexAttribArray( postprocessingShaderProgramAttributes.vPos );
-    glVertexAttribPointer(postprocessingShaderProgramAttributes.vPos, 3, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*) 0);
-
-    glEnableVertexAttribArray(postprocessingShaderProgramAttributes.vTextureCoord);
-    glVertexAttribPointer(postprocessingShaderProgramAttributes.vTextureCoord, 2, GL_FLOAT, GL_FALSE, sizeof(VertexTextured), (void*) (sizeof(GLfloat) * 3));
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// setupTextures() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Register all of our textures with the GPU
 ///
 // /////////////////////////////////////////////////////////////////////////////
 void setupTextures() {
-    platformTextureHandle = CSCI441::TextureUtils::loadAndRegisterTexture( "assets/textures/ground.png" );
+    // LOOKHERE #4
+    skyboxSidesTextureHandle = CSCI441::TextureUtils::loadAndRegisterTexture("assets/textures/skyboxSides.png");
+    skyboxTopTextureHandle = CSCI441::TextureUtils::loadAndRegisterTexture("assets/textures/skyboxTop.png");
+    spriteTextureHandle = CSCI441::TextureUtils::loadAndRegisterTexture("assets/textures/snowflake.png");
 
-    // get handles for our full skybox
-    printf( "[INFO]: registering skybox...\n" );
-    fflush( stdout );
-    skyboxHandles[0] = CSCI441::TextureUtils::loadAndRegisterTexture( "assets/textures/skybox/DOOM16BK.png"   );
-    skyboxHandles[1] = CSCI441::TextureUtils::loadAndRegisterTexture( "assets/textures/skybox/DOOM16RT.png"   );
-    skyboxHandles[2] = CSCI441::TextureUtils::loadAndRegisterTexture( "assets/textures/skybox/DOOM16FT.png"  );
-    skyboxHandles[3] = CSCI441::TextureUtils::loadAndRegisterTexture( "assets/textures/skybox/DOOM16LF.png"  );
-    skyboxHandles[4] = CSCI441::TextureUtils::loadAndRegisterTexture( "assets/textures/skybox/DOOM16DN.png" );
-    skyboxHandles[5] = CSCI441::TextureUtils::loadAndRegisterTexture( "assets/textures/skybox/DOOM16UP.png"    );
-    printf( "[INFO]: skybox textures read in and registered!\n\n" );
 }
 
-// /////////////////////////////////////////////////////////////////////////////
-/// \desc
-///      Initialize our Framebuffer here
-///
-// /////////////////////////////////////////////////////////////////////////////
-void setupFramebuffers() {
-    // TODO #1 set up the framebuffer object!
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glGenRenderbuffers(1, &rbo);
-    glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, FBO_WIDTH, FBO_HEIGHT);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rbo);
-    glGenTextures(1, &fboTextureHandle);
-    glBindTexture(GL_TEXTURE_2D, fboTextureHandle);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, FBO_WIDTH, FBO_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTextureHandle, 0);
-    CSCI441::FramebufferUtils::printFramebufferStatusMessage(GL_FRAMEBUFFER);
-    CSCI441::FramebufferUtils::printFramebufferInfo(GL_FRAMEBUFFER, fbo);
-}
-
-// /////////////////////////////////////////////////////////////////////////////
+// setupScene() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Initialize all of our scene information here
 ///
@@ -615,21 +646,46 @@ void setupScene() {
     leftMouseDown = GL_FALSE;
     controlDown = GL_FALSE;
     mousePosition = glm::vec2( -9999.0f, -9999.0f );
+    drawBoundings = false;
+
+    // set up time
+    now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     // set up camera info
     arcballCam.cameraAngles   = glm::vec3( 3.52f, 1.9f, 25.0f );
     arcballCam.camDir         = glm::vec3(-1.0f, -1.0f, -1.0f);
     arcballCam.lookAtPoint    = glm::vec3(0.0f, 0.0f, 0.0f);
     arcballCam.upVector       = glm::vec3(    0.0f,  1.0f,  0.0f );
+
+    fountainShaderUniforms.eyePos = arcballCam.eyePos;
+    fountainShaderUniforms.lookAtPoint = arcballCam.lookAtPoint;
+
     updateCameraDirection();
+
+    // set up light info
+    glm::vec3 lightColor(1.0f, 1.0f, 1.0f);
+    glm::vec3 lightPos(5.0f, 15.0f, 5.0f);
+    glm::vec3 lightDir(-1.0f, -3.0f, -1.0f);
+    float lightCutoff = glm::cos( glm::radians(7.5f) );
+    lightType = 0;
+    gouradShaderProgram->useProgram();
+    glUniform3fv(gouradShaderProgramUniforms.lightColor, 1, &lightColor[0]);
+    glUniform3fv(gouradShaderProgramUniforms.lightPos, 1, &lightPos[0]);
+    glUniform3fv(gouradShaderProgramUniforms.lightDir, 1, &lightDir[0]);
+    glUniform1f(gouradShaderProgramUniforms.lightCutoff, lightCutoff);
+    glUniform1i(gouradShaderProgramUniforms.lightType, lightType);
+
+
+    // setup snowglobe
+    snowglobeAngle = 0.0f;
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// initialize() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Create our OpenGL context,
 ///          load all information to the GPU,
 ///          initialize scene information
-///
+/// \return window - the window that was created when the OpenGL context was created
 // /////////////////////////////////////////////////////////////////////////////
 GLFWwindow* initialize() {
     // GLFW sets up our OpenGL context so must be done first
@@ -642,7 +698,6 @@ GLFWwindow* initialize() {
     setupShaders();                                     // load all of our shader programs onto the GPU and get shader input locations
     setupBuffers();										// load all our VAOs and VBOs onto the GPU
     setupTextures();                                    // load all of our textures onto the GPU
-    setupFramebuffers();                                // initialize our FBOs on the GPU
     setupScene();                                       // initialize all of our scene information
 
     fprintf( stdout, "\n[INFO]: Setup complete\n" );
@@ -654,7 +709,7 @@ GLFWwindow* initialize() {
 //
 // Cleanup Functions
 
-// /////////////////////////////////////////////////////////////////////////////
+// cleanupShader() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Delete shaders off of the GPU
 ///
@@ -662,14 +717,16 @@ GLFWwindow* initialize() {
 void cleanupShaders() {
     fprintf( stdout, "[INFO]: ...deleting shaders.\n" );
 
-    delete textureShaderProgram;
-    delete modelPhongShaderProgram;
-    delete postprocessingShaderProgram;
+    delete gouradShaderProgram;
+    delete flatShaderProgram;
+    delete texShaderProgram;
+    delete billboardShaderProgram;
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// cleanupBuffers() /////////////////////////////////////////////////////////////////////////////
 /// \desc
-///      Delete VAOs and VBOs off of the GPU
+///      Delete VAOs and VBOs off of the GPU.
+///      Remove any buffers from CPU RAM as well.
 ///
 // /////////////////////////////////////////////////////////////////////////////
 void cleanupBuffers() {
@@ -680,13 +737,19 @@ void cleanupBuffers() {
     fprintf( stdout, "[INFO]: ...deleting VBOs....\n" );
 
     glDeleteBuffers( NUM_VAOS, vbos );
+    CSCI441::deleteObjectVBOs();
 
     fprintf( stdout, "[INFO]: ...deleting VAOs....\n" );
 
     glDeleteVertexArrays( NUM_VAOS, vaos );
+    CSCI441::deleteObjectVAOs();
+
+    free(spriteLocations);
+    free(spriteIndices);
+    free(distances);
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// cleanupTextures() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Delete textures off of the GPU
 ///
@@ -694,20 +757,10 @@ void cleanupBuffers() {
 void cleanupTextures() {
     fprintf( stdout, "[INFO]: ...deleting textures\n" );
 
-    glDeleteTextures(1, &platformTextureHandle);
-    glDeleteTextures(6, skyboxHandles);
+    glDeleteTextures(1, &spriteTextureHandle);
 }
 
-void cleanupFramebuffers() {
-    fprintf( stdout, "[INFO]: ...deleting FBOs....\n");
-    glDeleteFramebuffers(1, &fbo);                          // delete the FBO
-    glDeleteTextures(1, &fboTextureHandle);     // and the associated texture for it
-
-    fprintf( stdout, "[INFO]: ...deleting RBOs....\n");
-    glDeleteRenderbuffers(1, &rbo);                         // plus the RBO
-}
-
-// /////////////////////////////////////////////////////////////////////////////
+// shutdown() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Free all memory on the CPU/GPU and close our OpenGL context
 ///
@@ -719,7 +772,7 @@ void shutdown(GLFWwindow* window) {
     cleanupShaders();                                   // delete shaders from GPU
     cleanupBuffers();                                   // delete VAOs/VBOs from GPU
     cleanupTextures();                                  // delete textures from GPU
-    cleanupFramebuffers();                              // delete FBOs from GPU
+    particleSystem.cleanup();                           // delete shaders,VAO/VBOs, and textures from particle system
     fprintf( stdout, "[INFO]: ...closing GLFW.....\n" );
     glfwTerminate();						            // shut down GLFW to clean up our context
     fprintf( stdout, "[INFO]: ..shut down complete!\n" );
@@ -729,129 +782,169 @@ void shutdown(GLFWwindow* window) {
 //
 // Rendering / Drawing Functions - this is where the magic happens!
 
-// /////////////////////////////////////////////////////////////////////////////
+// renderScene() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///		This method will contain all of the objects to be drawn.
 /// \param viewMatrix - View Matrix for the Camera this scene should be rendered to
 /// \param projectionMatrix - Projection Matrix for the Camera this scene should be rendered to
 // /////////////////////////////////////////////////////////////////////////////
 void renderScene( glm::mat4 viewMatrix, glm::mat4 projectionMatrix ) {
-    glm::mat4 modelMatrix = glm::mat4( 1.0f );
+    /// skybox stuff
+    texShaderProgram->useProgram();
+    glm::mat4 modelMatrix = glm::scale(glm::mat4(1.0f), glm::vec3(40, 40, 40));
 
-    // ///////////////////////
-    //
-    // Draw Textured Skybox
+    glm::mat4 mvpMtx = projectionMatrix * viewMatrix * modelMatrix;
+    glUniformMatrix4fv(texShaderProgramUniforms.mvpMatrix, 1, GL_FALSE, &mvpMtx[0][0]);
 
-    textureShaderProgram->useProgram();
-    computeAndSendTransformationMatrices(modelMatrix, viewMatrix, projectionMatrix,
-                                         -1, -1, -1,
-                                         -1, -1,
-                                         textureShaderProgramUniforms.mvpMtx,
-                                         -1);
+    glBindTexture(GL_TEXTURE_2D, skyboxSidesTextureHandle);
 
-    for( unsigned int i = 0; i < 6; i++ ) {
-        glBindVertexArray( vaos[VAOS.SKYBOX + i] );
-        glBindTexture( GL_TEXTURE_2D, skyboxHandles[i] );
-        glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void*)0);
-    }
-
-    // ///////////////////////
-    //
-    // Draw Textured Platform
-
-    glBindVertexArray( vaos[VAOS.PLATFORM] );
-    glBindTexture( GL_TEXTURE_2D, platformTextureHandle );
+    glBindVertexArray(skyboxFrontVAO);
+    glDrawElements( GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void*)0 );
+    glBindVertexArray(skyboxSideVAO);
     glDrawElements( GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void*)0 );
 
-    // ///////////////////////
-    //
-    // Draw Object Model with Phong Shading using Blinn-Phong Reflectance & Texturing
+    glBindTexture(GL_TEXTURE_2D, skyboxTopTextureHandle);
 
-    modelPhongShaderProgram->useProgram();
-    modelMatrix = glm::translate( glm::mat4(1.0f), glm::vec3(4, 0.1, 0) );
+    glBindVertexArray(skyboxTopVAO);
+    glDrawElements( GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void*)0 );
 
-    computeAndSendTransformationMatrices(modelMatrix, viewMatrix, projectionMatrix,
-                                         -1, modelPhongShaderProgramUniforms.viewMtx, -1,
-                                         modelPhongShaderProgramUniforms.modelViewMtx, -1,
-                                         modelPhongShaderProgramUniforms.mvpMtx,
-                                         modelPhongShaderProgramUniforms.normalMtx);
+    //back half
+    glBindTexture(GL_TEXTURE_2D, skyboxSidesTextureHandle);
+    glm::mat4 newModelMatrix = glm::translate(modelMatrix, glm::vec3(0,0,-2));
 
-    townModel->draw( modelPhongShaderProgramAttributes.vPos, modelPhongShaderProgramAttributes.vNormal, modelPhongShaderProgramAttributes.vTextureCoord,
-                 modelPhongShaderProgramUniforms.materialDiffuse, modelPhongShaderProgramUniforms.materialSpecular, modelPhongShaderProgramUniforms.materialShininess, modelPhongShaderProgramUniforms.materialAmbient,
-                 GL_TEXTURE0 );
+    mvpMtx = projectionMatrix * viewMatrix * newModelMatrix;
+    glUniformMatrix4fv(texShaderProgramUniforms.mvpMatrix, 1, GL_FALSE, &mvpMtx[0][0]);
+
+    glBindVertexArray(skyboxFrontVAO);
+    glDrawElements( GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void*)0 );
+
+    newModelMatrix = glm::translate(modelMatrix, glm::vec3(-2,0,0));
+    mvpMtx = projectionMatrix * viewMatrix * newModelMatrix;
+    glUniformMatrix4fv(texShaderProgramUniforms.mvpMatrix, 1, GL_FALSE, &mvpMtx[0][0]);
+
+    glBindVertexArray(skyboxSideVAO);
+    glDrawElements( GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void*)0 );
+
+    newModelMatrix = glm::translate(modelMatrix, glm::vec3(0,-2,0));
+    mvpMtx = projectionMatrix * viewMatrix * newModelMatrix;
+    glUniformMatrix4fv(texShaderProgramUniforms.mvpMatrix, 1, GL_FALSE, &mvpMtx[0][0]);
+    glBindTexture(GL_TEXTURE_2D, skyboxTopTextureHandle);
+
+    glBindVertexArray(skyboxTopVAO);
+    glDrawElements( GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void*)0 );
+
+
+
+    // ground stuff
+    gouradShaderProgram->useProgram();
+    // set the eye position - needed for specular reflection
+    glUniform3fv(gouradShaderProgramUniforms.eyePos, 1, &(arcballCam.eyePos[0]));
+
+    CSCI441::setVertexAttributeLocations( gouradShaderProgramAttributes.vPos,     // vertex position location
+                                          gouradShaderProgramAttributes.vNormal); // vertex normal location
+
+    modelMatrix = glm::mat4(1.0f);
+
+    glm::vec3 groundDiff = glm::vec3(0.07568f, 0.61424f, 0.07568f);
+    glm::vec3 groundSpec = glm::vec3(0.633f, 0.727811f, 0.633f);
+    glm::vec3 groundAmbi = glm::vec3(0.0215f, 0.1745f, 0.0215f);
+    float groundShine = 128.0f * 0.6f;
+    glUniform3fv(gouradShaderProgramUniforms.materialAmbColor, 1, &groundAmbi[0]);
+    glUniform3fv(gouradShaderProgramUniforms.materialDiffColor, 1, &groundDiff[0]);
+    glUniform3fv(gouradShaderProgramUniforms.materialSpecColor, 1, &groundSpec[0]);
+    glUniform3fv(gouradShaderProgramUniforms.materialShininess, 1, &groundShine);
+
+    // draw a larger ground plane by translating a single quad across a grid
+    for(int i = -10; i <= 10; i++) {
+        for(int j = -10; j <= 10; j++) {
+            modelMatrix = glm::translate(glm::mat4(1.0f), glm::vec3(i, 0, j));
+            computeAndSendTransformationMatrices(modelMatrix, viewMatrix, projectionMatrix,
+                                                 gouradShaderProgramUniforms.mvpMatrix,
+                                                 gouradShaderProgramUniforms.modelMatrix,
+                                                 gouradShaderProgramUniforms.normalMtx);
+            glBindVertexArray( platformVAO );
+            glDrawElements( GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void*)0 );
+        }
+    }
+
+
+    modelMatrix = glm::mat4( 1.0f );
+
+    particleSystem.draw(viewMatrix, projectionMatrix);
+
+    if(drawBoundings)
+        particleSystem.drawBoundings(viewMatrix,projectionMatrix, modelMatrix);
+
+    // LOOKHERE #3
+//    billboardShaderProgram->useProgram();
+//    modelMatrix = glm::rotate(glm::mat4(1.0f), snowglobeAngle, CSCI441::Y_AXIS);
+//    computeAndSendTransformationMatrices( modelMatrix, viewMatrix, projectionMatrix,
+//                                          billboardShaderProgramUniforms.mvMatrix, billboardShaderProgramUniforms.projMatrix);
+//    glBindVertexArray( vaos[VAOS.PARTICLE_SYSTEM] );
+//    glBindTexture(GL_TEXTURE_2D, spriteTextureHandle);
+
+//    // TODO #1
+//    glm::vec3 v = normalize(arcballCam.lookAtPoint - arcballCam.eyePos);    //view vector
+//
+//    for(int i = 0; i < NUM_SPRITES; i++) {
+//        glm::vec3 currentSprite = spriteLocations[spriteIndices[i]];    //sprite position
+//        glm::vec4 p = modelMatrix * glm::vec4(currentSprite, 1);    //sprite point
+//        glm::vec4 ep = p - glm::vec4(arcballCam.eyePos, 1);         //ep vector
+//        distances[i] = glm::dot(glm::vec4(v,0),ep);              //distance vector
+//    }
+
+    // TODO #2
+    // sort the indices by distance
+//    for(int i = 0; i < NUM_SPRITES; i++) {
+//        for(int j = 1; j < NUM_SPRITES; j++) {
+//            if(distances[j-1] < distances[j]) {
+//                float temp = distances[j-1];
+//                distances[j-1] = distances[j];
+//                distances[j] = temp;
+//                temp = spriteIndices[j-1];
+//                spriteIndices[j-1] = spriteIndices[j];
+//                spriteIndices[j] = temp;
+//            }
+//        }
+//    }
+
+//    for(int i = 1; i < NUM_SPRITES; i++) {
+//        if(distances[i-1] < distances[i])
+//            printf("uh oh\n");
+//    }
+
+    // TODO #3
+//    glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, ibos[VAOS.PARTICLE_SYSTEM] );
+//    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(GLushort) * NUM_SPRITES, spriteIndices);
+//
+//    glDrawElements( GL_POINTS, NUM_SPRITES, GL_UNSIGNED_SHORT, (void*)0 );
 }
 
-// /////////////////////////////////////////////////////////////////////////////
+// updateScene() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Update all of our scene objects - perform animation here
 ///
 // /////////////////////////////////////////////////////////////////////////////
 void updateScene() {
 
+    //find time passed since last update
+    unsigned long long time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    int timePassed = time - now;
+    int timeThroughSecond = time % 1000;
+    //if(now/1000 < time/1000)
+        //fprintf(stdout, "SECOND PASSED");     //- used for testing math for when to spawn
+
+    now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    particleSystem.update(timePassed, timeThroughSecond, glm::vec3(0,0,0));
+
+    snowglobeAngle += 0.01f;
+    if(snowglobeAngle >= 6.28f) {
+        snowglobeAngle -= 6.28f;
+    }
 }
 
-// /////////////////////////////////////////////////////////////////////////////
-/// \desc
-///     Renders our scene as normal with all objects displayed
-// /////////////////////////////////////////////////////////////////////////////
-void firstPass(GLFWwindow* window) {
-    glDrawBuffer( GL_BACK );				        // work with our back frame buffer
-    glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );	// clear the current color contents and depth buffer in the window
-
-    // Get the size of our framebuffer.  Ideally this should be the same dimensions as our window, but
-    // when using a Retina display the actual window can be larger than the requested window.  Therefore
-    // query what the actual size of the window we are rendering to is.
-    GLint windowWidth, windowHeight;
-    glfwGetFramebufferSize( window, &windowWidth, &windowHeight );
-
-    // TODO #2B
-    glViewport( 0, 0, FBO_WIDTH, FBO_HEIGHT );
-
-    // set the projection matrix based on the window size
-    // use a perspective projection that ranges
-    // with a FOV of 45 degrees, for our current aspect ratio, and Z ranges from [0.001, 1000].
-    glm::mat4 projectionMatrix = glm::perspective( 45.0f, (GLfloat) FBO_WIDTH / (GLfloat) FBO_HEIGHT, 0.001f, 100.0f );
-
-    // set up our look at matrix to position our camera
-    arcballCam.eyePos = arcballCam.lookAtPoint + arcballCam.camDir * arcballCam.cameraAngles.z;
-    glm::mat4 viewMatrix = glm::lookAt( arcballCam.eyePos,
-                                        arcballCam.lookAtPoint,
-                                        arcballCam.upVector );
-
-    // draw everything to the window
-    // pass our view and projection matrices
-    renderScene( viewMatrix, projectionMatrix );
-}
-
-// /////////////////////////////////////////////////////////////////////////////
-/// \desc
-///     Renders a full screen textured quad with the FBO overlaid
-/// \param window The window to render to
-// /////////////////////////////////////////////////////////////////////////////
-void secondPass(GLFWwindow* window) {
-    glDrawBuffer( GL_BACK );				                     // work with our back frame buffer
-    glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );	 // clear the current color contents and depth buffer in the window
-
-    // Get the size of our framebuffer.  Ideally this should be the same dimensions as our window, but
-    // when using a Retina display the actual window can be larger than the requested window.  Therefore
-    // query what the actual size of the window we are rendering to is.
-    GLint windowWidth, windowHeight;
-    glfwGetFramebufferSize( window, &windowWidth, &windowHeight );
-
-    // update the viewport - tell OpenGL we want to render to the whole window
-    glViewport( 0, 0, windowWidth, windowHeight );
-
-    // TODO #3B
-    glm::mat4 projMtx = glm::ortho(-1, 1, -1, 1, -1, 1);
-    postprocessingShaderProgram->useProgram();
-    glUniformMatrix4fv(postprocessingShaderProgramUniforms.projectionMtx, 1, GL_FALSE, &projMtx[0][0]);
-    glBindTexture(GL_TEXTURE_2D, fboTextureHandle);
-    glBindVertexArray(vaos[7]);
-    glDrawElements(GL_TRIANGLE_STRIP, 4,  GL_UNSIGNED_SHORT, (void*)0);
-
-}
-
-// /////////////////////////////////////////////////////////////////////////////
+// run() /////////////////////////////////////////////////////////////////////////////
 /// \desc
 ///      Runs our draw loop and renders/updates our scene
 /// \param window - window to render the scene to
@@ -861,22 +954,36 @@ void run(GLFWwindow* window) {
     //	until the user decides to close the window and quit the program.  Without a loop, the
     //	window will display once and then the program exits.
     while( !glfwWindowShouldClose(window) ) {	        // check if the window was instructed to be closed
+        glDrawBuffer( GL_BACK );				        // work with our back frame buffer
+        glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );	// clear the current color contents and depth buffer in the window
 
-        // /////////////////
-        //
-        // FIRST PASS
-        // TODO #2A
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        firstPass(window);                              // render our scene as normal with all our objects
-        // TODO #2C
-        glFlush();
+        // Get the size of our framebuffer.  Ideally this should be the same dimensions as our window, but
+        // when using a Retina display the actual window can be larger than the requested window.  Therefore
+        // query what the actual size of the window we are rendering to is.
+        GLint framebufferWidth, framebufferHeight;
+        glfwGetFramebufferSize( window, &framebufferWidth, &framebufferHeight );
 
-        // /////////////////
-        //
-        // SECOND PASS
-        // TODO #3A
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        secondPass(window);
+        // update the viewport - tell OpenGL we want to render to the whole window
+        glViewport( 0, 0, framebufferWidth, framebufferHeight );
+
+        // set the projection matrix based on the window size
+        // use a perspective projection that ranges
+        // with a FOV of 45 degrees, for our current aspect ratio, and Z ranges from [0.001, 1000].
+        glm::mat4 projectionMatrix = glm::perspective( 45.0f, (GLfloat) WINDOW_WIDTH / (GLfloat) WINDOW_HEIGHT, 0.001f, 100.0f );
+
+        // set up our look at matrix to position our camera
+        arcballCam.eyePos = arcballCam.lookAtPoint + arcballCam.camDir * arcballCam.cameraAngles.z;
+        glm::mat4 viewMatrix = glm::lookAt( arcballCam.eyePos,
+                                            arcballCam.lookAtPoint,
+                                            arcballCam.upVector );
+
+        fountainShaderUniforms.eyePos = arcballCam.eyePos;
+        fountainShaderUniforms.lookAtPoint = arcballCam.lookAtPoint;
+        particleSystem.setCameraVariables(arcballCam.lookAtPoint, arcballCam.eyePos);
+
+        // draw everything to the window
+        // pass our view and projection matrices
+        renderScene( viewMatrix, projectionMatrix );
 
         glfwSwapBuffers(window);                        // flush the OpenGL commands and make sure they get rendered!
         glfwPollEvents();				                // check for any events and signal to redraw screen
@@ -889,7 +996,7 @@ void run(GLFWwindow* window) {
 //
 // Our main function
 
-// /////////////////////////////////////////////////////////////////////////////
+// main() /////////////////////////////////////////////////////////////////////////////
 ///
 // /////////////////////////////////////////////////////////////////////////////
 int main() {
