@@ -53,10 +53,10 @@ const GLint WINDOW_WIDTH = 640, WINDOW_HEIGHT = 640;
 GLboolean controlDown;                  // if the control button was pressed when the mouse was pressed
 GLboolean leftMouseDown;                // if the mouse left button is pressed
 glm::vec2 mousePosition;                // current mouse position
-
+bool arcBallChoice=true;
 GLuint lightType;                       // type of the light - 0 point 1 directional 2 spot
 bool drawBoundings;
-
+glm::vec3 blackHolePos = glm::vec3 (0,0,0);
 // keep track of all our camera information
 struct CameraParameters {
     glm::vec3 cameraAngles;             // cameraAngles --> x = theta, y = phi, z = radius
@@ -65,6 +65,15 @@ struct CameraParameters {
     glm::vec3 lookAtPoint;              // location of our object of interest to view
     glm::vec3 upVector;                 // the upVector of our camera
 } arcballCam;
+
+struct CameraParameters {
+    glm::vec3 cameraAngles;             // cameraAngles --> x = theta, y = phi, z = radius
+    glm::vec3 camDir;                   // direction to the camera
+    glm::vec3 eyePos;                   // camera position
+    glm::vec3 lookAtPoint;              // location of our object of interest to view
+    glm::vec3 upVector; // the upVector of our camera
+    glm::vec2 camSpeed;
+} freeCam;
 
 // time information
 unsigned long long now;
@@ -148,6 +157,7 @@ struct GouradShaderProgramUniforms {
     GLint materialSpecColor;            // material specular color
     GLint materialShininess;            // material shininess factor
     GLint materialAmbColor;             // material ambient color
+    GLint pointLightPos;
 } gouradShaderProgramUniforms;
 struct GouradShaderProgramAttributes {
     GLint vPos;                         // position of our vertex
@@ -181,22 +191,40 @@ struct TexShaderProgramAttributes {
 ///  cameraAngles is updated.
 ///
 // /////////////////////////////////////////////////////////////////////////////
+
+void updateLookAtPoint() {
+    freeCam.lookAtPoint = freeCam.eyePoint + freeCam.camDir;
+}
+
 void updateCameraDirection() {
     // ensure the camera does not flip upside down at either pole
-    if( arcballCam.cameraAngles.y < 0 )     arcballCam.cameraAngles.y = 0.0f + 0.001f;
-    if( arcballCam.cameraAngles.y >= M_PI ) arcballCam.cameraAngles.y = M_PI - 0.001f;
 
-    // do not let our camera get too close or too far away
-    if( arcballCam.cameraAngles.z <= 2.0f )  arcballCam.cameraAngles.z = 2.0f;
-    if( arcballCam.cameraAngles.z >= 30.0f ) arcballCam.cameraAngles.z = 30.0f;
+    if(arcBallChoice) {
+        if (arcballCam.cameraAngles.y < 0) arcballCam.cameraAngles.y = 0.0f + 0.001f;
+        if (arcballCam.cameraAngles.y >= M_PI) arcballCam.cameraAngles.y = M_PI - 0.001f;
 
-    // update the new direction to the camera
-    arcballCam.camDir.x =  sinf( arcballCam.cameraAngles.x ) * sinf( arcballCam.cameraAngles.y );
-    arcballCam.camDir.y = -cosf( arcballCam.cameraAngles.y );
-    arcballCam.camDir.z = -cosf( arcballCam.cameraAngles.x ) * sinf( arcballCam.cameraAngles.y );
+        // do not let our camera get too close or too far away
+        if (arcballCam.cameraAngles.z <= 2.0f) arcballCam.cameraAngles.z = 2.0f;
+        if (arcballCam.cameraAngles.z >= 30.0f) arcballCam.cameraAngles.z = 30.0f;
 
-    // normalize this direction
-    arcballCam.camDir = glm::normalize(arcballCam.camDir);
+        // update the new direction to the camera
+        arcballCam.camDir.x = sinf(arcballCam.cameraAngles.x) * sinf(arcballCam.cameraAngles.y);
+        arcballCam.camDir.y = -cosf(arcballCam.cameraAngles.y);
+        arcballCam.camDir.z = -cosf(arcballCam.cameraAngles.x) * sinf(arcballCam.cameraAngles.y);
+
+        // normalize this direction
+        arcballCam.camDir = glm::normalize(arcballCam.camDir);
+    }
+    else{
+        if( freeCam.cameraAngles.y <= 0 ) freeCam.cameraAngles.y = 0.0f + 0.001f;
+        if( freeCam.cameraAngles.y >= M_PI ) freeCam.cameraAngles.y = M_PI - 0.001f;
+
+        freeCam.camDir.x = freeCam.cameraAngles.z * sinf( freeCam.cameraAngles.x ) * sinf( freeCam.cameraAngles.y );
+        freeCam.camDir.y = freeCam.cameraAngles.z * -cosf( freeCam.cameraAngles.y );
+        freeCam.camDir.z = freeCam.cameraAngles.z * -cosf( freeCam.cameraAngles.x ) * sinf( freeCam.cameraAngles.y );
+        freeCam.camDir = glm::normalize(freeCam.camDir);
+        updateLookAtPoint();
+    }
 }
 
 // computeAndSendTransformationMatrices() //////////////////////////////////////////////////////////////////////////////
@@ -279,6 +307,36 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
             case GLFW_KEY_B:
                 drawBoundings = !drawBoundings;
                 break;
+            case GLFW_KEY_1:
+                arcBallChoice=true;
+                break;
+            case GLFW_KEY_2:
+                arcBallChoice=false;
+                break;
+            case GLFW_KEY_SPACE:
+                freeCam.eyePoint += freeCam.camDir * freeCam.cameraSpeed.x;
+                updateLookAtPoint();
+                break;
+            case GLFW_KEY_X:
+                freeCam.eyePoint -= freeCam.camDir * freeCam.cameraSpeed.x;
+                updateLookAtPoint();
+                break;
+            case GLFW_KEY_D:
+                freeCam.cameraAngles.x += freeCam.cameraSpeed.y;
+                updateCameraDirection();
+                break;
+            case GLFW_KEY_A:
+                freeCam.cameraAngles.x -= freeCam.cameraSpeed.y;
+                updateCameraDirection();
+                break;
+            case GLFW_KEY_W:
+                freeCam.cameraAngles.y += freeCam.cameraSpeed.y;
+                updateCameraDirection();
+                break;
+            case GLFW_KEY_S:
+                freeCam.cameraAngles.y -= freeCam.cameraSpeed.y;
+                updateCameraDirection();
+                break;
             default: break;
         }
     }
@@ -322,8 +380,8 @@ static void cursor_callback( GLFWwindow* window, double xPos, double yPos ) {
                 if( (mousePosition.x - -9999.0f) > 0.001f ) {
                     if( !controlDown ) {
                         // if control is not held down, update our camera angles theta & phi
-                        arcballCam.cameraAngles.x += (xPos - mousePosition.x) * 0.005f;
-                        arcballCam.cameraAngles.y += (mousePosition.y - yPos) * 0.005f;
+                        freeCam.cameraAngles.x=arcballCam.cameraAngles.x += (xPos - mousePosition.x) * 0.005f;
+                        freeCam.cameraAngles.y=arcballCam.cameraAngles.y += (mousePosition.y - yPos) * 0.005f;
                     } else {
                         // otherwise control was held down, update our camera radius
                         double totChgSq = (xPos - mousePosition.x) + (yPos - mousePosition.y);
@@ -466,6 +524,7 @@ void setupShaders() {
     gouradShaderProgramUniforms.materialSpecColor   = gouradShaderProgram->getUniformLocation("materialSpecColor");
     gouradShaderProgramUniforms.materialShininess   = gouradShaderProgram->getUniformLocation("materialShininess");
     gouradShaderProgramUniforms.materialAmbColor    = gouradShaderProgram->getUniformLocation("materialAmbColor");
+    gouradShaderProgramUniforms.pointLightPos           = gouradShaderProgram->getUniformLocation( "pointLightPos");
     gouradShaderProgramAttributes.vPos              = gouradShaderProgram->getAttributeLocation("vPos");
     gouradShaderProgramAttributes.vNormal           = gouradShaderProgram->getAttributeLocation("vNormal");
 
@@ -680,11 +739,11 @@ void setupScene() {
     now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     // set up camera info
-    arcballCam.cameraAngles   = glm::vec3( 3.52f, 1.9f, 25.0f );
-    arcballCam.camDir         = glm::vec3(-1.0f, -1.0f, -1.0f);
-    arcballCam.lookAtPoint    = glm::vec3(0.0f, 0.0f, 0.0f);
-    arcballCam.upVector       = glm::vec3(    0.0f,  1.0f,  0.0f );
-
+    freeCam.cameraAngles=arcballCam.cameraAngles   = glm::vec3( 3.52f, 1.9f, 25.0f );
+    freeCam.camDir=arcballCam.camDir         = glm::vec3(-1.0f, -1.0f, -1.0f);
+    frecam.lookAtPoint=arcballCam.lookAtPoint    = glm::vec3(0.0f, 0.0f, 0.0f);
+    freeCam.upVector=arcballCam.upVector       = glm::vec3(    0.0f,  1.0f,  0.0f );
+    freeCam.camSpeed = glm::vec2(0.25f, 0.02f);
     fountainShaderUniforms.eyePos = arcballCam.eyePos;
     fountainShaderUniforms.lookAtPoint = arcballCam.lookAtPoint;
 
@@ -699,6 +758,7 @@ void setupScene() {
     gouradShaderProgram->useProgram();
     glUniform3fv(gouradShaderProgramUniforms.lightColor, 1, &lightColor[0]);
     glUniform3fv(gouradShaderProgramUniforms.lightPos, 1, &lightPos[0]);
+    glUniform3fv(gouradShaderProgramUniforms.pointLightPos, 1,&blackHolePos[0] );
     glUniform3fv(gouradShaderProgramUniforms.lightDir, 1, &lightDir[0]);
     glUniform1f(gouradShaderProgramUniforms.lightCutoff, lightCutoff);
     glUniform1i(gouradShaderProgramUniforms.lightType, lightType);
@@ -828,7 +888,7 @@ void computeAndSendMatrixUniforms(glm::mat4 modelMtx, glm::mat4 viewMtx, glm::ma
 
 
 void SetupSuckable(suckableObject &object, glm::mat4 viewMatrix, glm::mat4 projectionMatrix)  {
-    glm::vec3 blackHolePos = glm::vec3 (0,0,0);
+    blackHolePos = glm::vec3 (0,0,0);
 
     glm::vec3 objectForce = 2.5f * (blackHolePos-object.transform.position);
 
@@ -929,7 +989,12 @@ void renderScene( glm::mat4 viewMatrix, glm::mat4 projectionMatrix ) {
     // ground stuff
     gouradShaderProgram->useProgram();
     // set the eye position - needed for specular reflection
-    glUniform3fv(gouradShaderProgramUniforms.eyePos, 1, &(arcballCam.eyePos[0]));
+    if(arcBallChoice) {
+        glUniform3fv(gouradShaderProgramUniforms.eyePos, 1, &(arcballCam.eyePos[0]));
+    }
+    else{
+        glUniform3fv(gouradShaderProgramUniforms.eyePos, 1, &(freeCam.eyePos[0]));
+    }
 
     CSCI441::setVertexAttributeLocations( gouradShaderProgramAttributes.vPos,     // vertex position location
                                           gouradShaderProgramAttributes.vNormal); // vertex normal location
@@ -1072,14 +1137,26 @@ void run(GLFWwindow* window) {
         glm::mat4 projectionMatrix = glm::perspective( 45.0f, (GLfloat) WINDOW_WIDTH / (GLfloat) WINDOW_HEIGHT, 0.001f, 100.0f );
 
         // set up our look at matrix to position our camera
-        arcballCam.eyePos = arcballCam.lookAtPoint + arcballCam.camDir * arcballCam.cameraAngles.z;
-        glm::mat4 viewMatrix = glm::lookAt( arcballCam.eyePos,
-                                            arcballCam.lookAtPoint,
-                                            arcballCam.upVector );
+        if(arcBallChoice) {
+            arcballCam.eyePos = arcballCam.lookAtPoint + arcballCam.camDir * arcballCam.cameraAngles.z;
+            glm::mat4 viewMatrix = glm::lookAt(arcballCam.eyePos,
+                                               arcballCam.lookAtPoint,
+                                               arcballCam.upVector);
 
-        fountainShaderUniforms.eyePos = arcballCam.eyePos;
-        fountainShaderUniforms.lookAtPoint = arcballCam.lookAtPoint;
-        particleSystem.setCameraVariables(arcballCam.lookAtPoint, arcballCam.eyePos);
+            fountainShaderUniforms.eyePos = arcballCam.eyePos;
+            fountainShaderUniforms.lookAtPoint = arcballCam.lookAtPoint;
+            particleSystem.setCameraVariables(arcballCam.lookAtPoint, arcballCam.eyePos);
+        }
+        else{
+            freeCam.eyePos = freeCam.lookAtPoint + freeCam.camDir * freeCam.cameraAngles.z;
+            glm::mat4 viewMatrix = glm::lookAt(freeCam.eyePos,
+                                               freeCam.lookAtPoint,
+                                               freeCam.upVector);
+
+            fountainShaderUniforms.eyePos = freeCam.eyePos;
+            fountainShaderUniforms.lookAtPoint = freeCam.lookAtPoint;
+            particleSystem.setCameraVariables(freeCam.lookAtPoint, freeCam.eyePos);
+        }
 
         // draw everything to the window
         // pass our view and projection matrices
