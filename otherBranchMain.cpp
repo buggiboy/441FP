@@ -32,16 +32,15 @@
 #include <CSCI441/ShaderProgram.hpp>    // wrapper class for GLSL shader programs
 #include <CSCI441/TextureUtils.hpp>     // convenience for loading textures
 
-#include <LightingShaderStructs.h>
-#include <ParticleSystem.cpp>
+#include "LightingShaderStructs.h"
+#include "ParticleSystem.h"
 #include <glm/gtx/quaternion.hpp>
 
-#include <Transform.h>
-#include <Transform.cpp>
+#include "Transform.h"
 
 
 #define STB_IMAGE_IMPLEMENTATION
-
+//#include <CSCI441/stb_image.h>
 //***********************************************************************************************************************************************************
 //
 // Global Parameters
@@ -53,10 +52,10 @@ const GLint WINDOW_WIDTH = 640, WINDOW_HEIGHT = 640;
 GLboolean controlDown;                  // if the control button was pressed when the mouse was pressed
 GLboolean leftMouseDown;                // if the mouse left button is pressed
 glm::vec2 mousePosition;                // current mouse position
-bool arcBallChoice=true;
+
 GLuint lightType;                       // type of the light - 0 point 1 directional 2 spot
 bool drawBoundings;
-glm::vec3 blackHolePos = glm::vec3 (0,0,0);
+
 // keep track of all our camera information
 struct CameraParameters {
     glm::vec3 cameraAngles;             // cameraAngles --> x = theta, y = phi, z = radius
@@ -65,15 +64,6 @@ struct CameraParameters {
     glm::vec3 lookAtPoint;              // location of our object of interest to view
     glm::vec3 upVector;                 // the upVector of our camera
 } arcballCam;
-
-struct CameraParameters {
-    glm::vec3 cameraAngles;             // cameraAngles --> x = theta, y = phi, z = radius
-    glm::vec3 camDir;                   // direction to the camera
-    glm::vec3 eyePos;                   // camera position
-    glm::vec3 lookAtPoint;              // location of our object of interest to view
-    glm::vec3 upVector; // the upVector of our camera
-    glm::vec2 camSpeed;
-} freeCam;
 
 // time information
 unsigned long long now;
@@ -116,7 +106,7 @@ struct suckableObject   {
 };
 suckableObject myTeapot;
 suckableObject myCube;
-suckableObject mySuzanne;
+suckableObject myBulb;
 
 // Billboard shader program
 CSCI441::ShaderProgram *billboardShaderProgram = nullptr;
@@ -157,7 +147,6 @@ struct GouradShaderProgramUniforms {
     GLint materialSpecColor;            // material specular color
     GLint materialShininess;            // material shininess factor
     GLint materialAmbColor;             // material ambient color
-    GLint pointLightPos;
 } gouradShaderProgramUniforms;
 struct GouradShaderProgramAttributes {
     GLint vPos;                         // position of our vertex
@@ -191,40 +180,22 @@ struct TexShaderProgramAttributes {
 ///  cameraAngles is updated.
 ///
 // /////////////////////////////////////////////////////////////////////////////
-
-void updateLookAtPoint() {
-    freeCam.lookAtPoint = freeCam.eyePoint + freeCam.camDir;
-}
-
 void updateCameraDirection() {
     // ensure the camera does not flip upside down at either pole
+    if( arcballCam.cameraAngles.y < 0 )     arcballCam.cameraAngles.y = 0.0f + 0.001f;
+    if( arcballCam.cameraAngles.y >= M_PI ) arcballCam.cameraAngles.y = M_PI - 0.001f;
 
-    if(arcBallChoice) {
-        if (arcballCam.cameraAngles.y < 0) arcballCam.cameraAngles.y = 0.0f + 0.001f;
-        if (arcballCam.cameraAngles.y >= M_PI) arcballCam.cameraAngles.y = M_PI - 0.001f;
+    // do not let our camera get too close or too far away
+    if( arcballCam.cameraAngles.z <= 2.0f )  arcballCam.cameraAngles.z = 2.0f;
+    if( arcballCam.cameraAngles.z >= 30.0f ) arcballCam.cameraAngles.z = 30.0f;
 
-        // do not let our camera get too close or too far away
-        if (arcballCam.cameraAngles.z <= 2.0f) arcballCam.cameraAngles.z = 2.0f;
-        if (arcballCam.cameraAngles.z >= 30.0f) arcballCam.cameraAngles.z = 30.0f;
+    // update the new direction to the camera
+    arcballCam.camDir.x =  sinf( arcballCam.cameraAngles.x ) * sinf( arcballCam.cameraAngles.y );
+    arcballCam.camDir.y = -cosf( arcballCam.cameraAngles.y );
+    arcballCam.camDir.z = -cosf( arcballCam.cameraAngles.x ) * sinf( arcballCam.cameraAngles.y );
 
-        // update the new direction to the camera
-        arcballCam.camDir.x = sinf(arcballCam.cameraAngles.x) * sinf(arcballCam.cameraAngles.y);
-        arcballCam.camDir.y = -cosf(arcballCam.cameraAngles.y);
-        arcballCam.camDir.z = -cosf(arcballCam.cameraAngles.x) * sinf(arcballCam.cameraAngles.y);
-
-        // normalize this direction
-        arcballCam.camDir = glm::normalize(arcballCam.camDir);
-    }
-    else{
-        if( freeCam.cameraAngles.y <= 0 ) freeCam.cameraAngles.y = 0.0f + 0.001f;
-        if( freeCam.cameraAngles.y >= M_PI ) freeCam.cameraAngles.y = M_PI - 0.001f;
-
-        freeCam.camDir.x = freeCam.cameraAngles.z * sinf( freeCam.cameraAngles.x ) * sinf( freeCam.cameraAngles.y );
-        freeCam.camDir.y = freeCam.cameraAngles.z * -cosf( freeCam.cameraAngles.y );
-        freeCam.camDir.z = freeCam.cameraAngles.z * -cosf( freeCam.cameraAngles.x ) * sinf( freeCam.cameraAngles.y );
-        freeCam.camDir = glm::normalize(freeCam.camDir);
-        updateLookAtPoint();
-    }
+    // normalize this direction
+    arcballCam.camDir = glm::normalize(arcballCam.camDir);
 }
 
 // computeAndSendTransformationMatrices() //////////////////////////////////////////////////////////////////////////////
@@ -307,36 +278,6 @@ static void key_callback(GLFWwindow* window, int key, int scancode, int action, 
             case GLFW_KEY_B:
                 drawBoundings = !drawBoundings;
                 break;
-            case GLFW_KEY_1:
-                arcBallChoice=true;
-                break;
-            case GLFW_KEY_2:
-                arcBallChoice=false;
-                break;
-            case GLFW_KEY_SPACE:
-                freeCam.eyePoint += freeCam.camDir * freeCam.cameraSpeed.x;
-                updateLookAtPoint();
-                break;
-            case GLFW_KEY_X:
-                freeCam.eyePoint -= freeCam.camDir * freeCam.cameraSpeed.x;
-                updateLookAtPoint();
-                break;
-            case GLFW_KEY_D:
-                freeCam.cameraAngles.x += freeCam.cameraSpeed.y;
-                updateCameraDirection();
-                break;
-            case GLFW_KEY_A:
-                freeCam.cameraAngles.x -= freeCam.cameraSpeed.y;
-                updateCameraDirection();
-                break;
-            case GLFW_KEY_W:
-                freeCam.cameraAngles.y += freeCam.cameraSpeed.y;
-                updateCameraDirection();
-                break;
-            case GLFW_KEY_S:
-                freeCam.cameraAngles.y -= freeCam.cameraSpeed.y;
-                updateCameraDirection();
-                break;
             default: break;
         }
     }
@@ -380,8 +321,8 @@ static void cursor_callback( GLFWwindow* window, double xPos, double yPos ) {
                 if( (mousePosition.x - -9999.0f) > 0.001f ) {
                     if( !controlDown ) {
                         // if control is not held down, update our camera angles theta & phi
-                        freeCam.cameraAngles.x=arcballCam.cameraAngles.x += (xPos - mousePosition.x) * 0.005f;
-                        freeCam.cameraAngles.y=arcballCam.cameraAngles.y += (mousePosition.y - yPos) * 0.005f;
+                        arcballCam.cameraAngles.x += (xPos - mousePosition.x) * 0.005f;
+                        arcballCam.cameraAngles.y += (mousePosition.y - yPos) * 0.005f;
                     } else {
                         // otherwise control was held down, update our camera radius
                         double totChgSq = (xPos - mousePosition.x) + (yPos - mousePosition.y);
@@ -524,7 +465,6 @@ void setupShaders() {
     gouradShaderProgramUniforms.materialSpecColor   = gouradShaderProgram->getUniformLocation("materialSpecColor");
     gouradShaderProgramUniforms.materialShininess   = gouradShaderProgram->getUniformLocation("materialShininess");
     gouradShaderProgramUniforms.materialAmbColor    = gouradShaderProgram->getUniformLocation("materialAmbColor");
-    gouradShaderProgramUniforms.pointLightPos           = gouradShaderProgram->getUniformLocation( "pointLightPos");
     gouradShaderProgramAttributes.vPos              = gouradShaderProgram->getAttributeLocation("vPos");
     gouradShaderProgramAttributes.vNormal           = gouradShaderProgram->getAttributeLocation("vNormal");
 
@@ -576,7 +516,7 @@ void setupShaders() {
 // /////////////////////////////////////////////////////////////////////////////
 void setupBuffers() {
     model = new CSCI441::ModelLoader();
-    model->loadModelFile( "assets/models/suzanne.obj" );
+    model->loadModelFile( "assets/models/bulb/bulb.obj" );
     // ground
     // ground vbos
     struct Vertex {
@@ -717,8 +657,8 @@ void setupBuffers() {
 // /////////////////////////////////////////////////////////////////////////////
 void setupTextures() {
     // LOOKHERE #4
-    skyboxSidesTextureHandle = CSCI441::TextureUtils::loadAndRegisterTexture("assets/textures/skyboxSides.png");
-    skyboxTopTextureHandle = CSCI441::TextureUtils::loadAndRegisterTexture("assets/textures/skyboxTop.png");
+    skyboxSidesTextureHandle = CSCI441::TextureUtils::loadAndRegisterTexture("assets/textures/SpaceSkyBox.png");
+    skyboxTopTextureHandle = CSCI441::TextureUtils::loadAndRegisterTexture("assets/textures/SpaceSkyBox.png");
     spriteTextureHandle = CSCI441::TextureUtils::loadAndRegisterTexture("assets/textures/snowflake.png");
 
 }
@@ -739,18 +679,18 @@ void setupScene() {
     now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     // set up camera info
-    freeCam.cameraAngles=arcballCam.cameraAngles   = glm::vec3( 3.52f, 1.9f, 25.0f );
-    freeCam.camDir=arcballCam.camDir         = glm::vec3(-1.0f, -1.0f, -1.0f);
-    frecam.lookAtPoint=arcballCam.lookAtPoint    = glm::vec3(0.0f, 0.0f, 0.0f);
-    freeCam.upVector=arcballCam.upVector       = glm::vec3(    0.0f,  1.0f,  0.0f );
-    freeCam.camSpeed = glm::vec2(0.25f, 0.02f);
+    arcballCam.cameraAngles   = glm::vec3( 3.52f, 1.9f, 25.0f );
+    arcballCam.camDir         = glm::vec3(-1.0f, -1.0f, -1.0f);
+    arcballCam.lookAtPoint    = glm::vec3(0.0f, 0.0f, 0.0f);
+    arcballCam.upVector       = glm::vec3(    0.0f,  1.0f,  0.0f );
+
     fountainShaderUniforms.eyePos = arcballCam.eyePos;
     fountainShaderUniforms.lookAtPoint = arcballCam.lookAtPoint;
 
     updateCameraDirection();
 
     // set up light info
-    glm::vec3 lightColor(1.0f, 1.0f, 1.0f);
+    glm::vec3 lightColor(1.0f, 1.0f, 0.7f);
     glm::vec3 lightPos(5.0f, 15.0f, 5.0f);
     glm::vec3 lightDir(-1.0f, -3.0f, -1.0f);
     float lightCutoff = glm::cos( glm::radians(7.5f) );
@@ -758,7 +698,6 @@ void setupScene() {
     gouradShaderProgram->useProgram();
     glUniform3fv(gouradShaderProgramUniforms.lightColor, 1, &lightColor[0]);
     glUniform3fv(gouradShaderProgramUniforms.lightPos, 1, &lightPos[0]);
-    glUniform3fv(gouradShaderProgramUniforms.pointLightPos, 1,&blackHolePos[0] );
     glUniform3fv(gouradShaderProgramUniforms.lightDir, 1, &lightDir[0]);
     glUniform1f(gouradShaderProgramUniforms.lightCutoff, lightCutoff);
     glUniform1i(gouradShaderProgramUniforms.lightType, lightType);
@@ -768,9 +707,9 @@ void setupScene() {
     snowglobeAngle = 0.0f;
 
     //suckable objects:
-    myTeapot.color = glm::vec3(.8,.8,.8);
-    myTeapot.spec = glm::vec3(.9,.9,.95);
-    myTeapot.ambient = glm::vec3(.7,.7,.7);
+    myTeapot.color = glm::vec3(.8,0,0);
+    myTeapot.spec = glm::vec3(0,.8,0);
+    myTeapot.ambient = glm::vec3(0,0,.3);
     myTeapot.transform.position = glm::vec3 (5,5,2);
     myTeapot.velocity = glm::vec3 (-.6,.3,.4);
     myTeapot.transform.rotation = Transform::toQuaternion(0,0,0);
@@ -784,13 +723,13 @@ void setupScene() {
     myCube.transform.rotation = Transform::toQuaternion(0,0,0);
     myCube.rotationalVelocity = glm::vec3 (-0.1,.02,0);
 
-    mySuzanne.color = glm::vec3(.8,.4,.0);
-    mySuzanne.spec = glm::vec3(.2,.2,.2);
-    mySuzanne.ambient = glm::vec3(.3,.3,.3);
-    mySuzanne.transform.position = glm::vec3 (1,-4,-3);
-    mySuzanne.velocity = glm::vec3 (-.6,.4,.1);
-    mySuzanne.transform.rotation = Transform::toQuaternion(0,0,0);
-    mySuzanne.rotationalVelocity = glm::vec3 (-0.1,.02,0);
+    myBulb.color = glm::vec3(.8, .4, .0);
+    myBulb.spec = glm::vec3(.2, .2, .2);
+    myBulb.ambient = glm::vec3(.3, .3, .3);
+    myBulb.transform.position = glm::vec3 (1, -4, -3);
+    myBulb.velocity = glm::vec3 (-.6, .4, .1);
+    myBulb.transform.rotation = Transform::toQuaternion(0, 0, 0);
+    myBulb.rotationalVelocity = glm::vec3 (-0.1, .02, 0);
 }
 
 // initialize() /////////////////////////////////////////////////////////////////////////////
@@ -888,7 +827,7 @@ void computeAndSendMatrixUniforms(glm::mat4 modelMtx, glm::mat4 viewMtx, glm::ma
 
 
 void SetupSuckable(suckableObject &object, glm::mat4 viewMatrix, glm::mat4 projectionMatrix)  {
-    blackHolePos = glm::vec3 (0,0,0);
+    glm::vec3 blackHolePos = glm::vec3 (0,0,0);
 
     glm::vec3 objectForce = 2.5f * (blackHolePos-object.transform.position);
 
@@ -898,12 +837,18 @@ void SetupSuckable(suckableObject &object, glm::mat4 viewMatrix, glm::mat4 proje
     object.transform.position += object.velocity;
     object.transform.setRotation(object.transform.eulerAngles() + object.rotationalVelocity);
 
-    myTeapot.transform.updateMatrix();
+    //now set velocity damping:
+    //object.velocity *= 0.98f;
+
+
+    object.transform.updateMatrix();
 
     glUniform3fv(gouradShaderProgramUniforms.materialAmbColor, 1, &object.ambient[0]);
     glUniform3fv(gouradShaderProgramUniforms.materialDiffColor, 1, &object.color[0]);
     glUniform3fv(gouradShaderProgramUniforms.materialSpecColor, 1, &object.spec[0]);
     glUniform3fv(gouradShaderProgramUniforms.materialShininess, 1, &object.shininess);
+
+
 
     computeAndSendTransformationMatrices(object.transform.getMatrix(), viewMatrix, projectionMatrix,
                                          gouradShaderProgramUniforms.mvpMatrix,
@@ -989,12 +934,7 @@ void renderScene( glm::mat4 viewMatrix, glm::mat4 projectionMatrix ) {
     // ground stuff
     gouradShaderProgram->useProgram();
     // set the eye position - needed for specular reflection
-    if(arcBallChoice) {
-        glUniform3fv(gouradShaderProgramUniforms.eyePos, 1, &(arcballCam.eyePos[0]));
-    }
-    else{
-        glUniform3fv(gouradShaderProgramUniforms.eyePos, 1, &(freeCam.eyePos[0]));
-    }
+    glUniform3fv(gouradShaderProgramUniforms.eyePos, 1, &(arcballCam.eyePos[0]));
 
     CSCI441::setVertexAttributeLocations( gouradShaderProgramAttributes.vPos,     // vertex position location
                                           gouradShaderProgramAttributes.vNormal); // vertex normal location
@@ -1011,6 +951,7 @@ void renderScene( glm::mat4 viewMatrix, glm::mat4 projectionMatrix ) {
     glUniform3fv(gouradShaderProgramUniforms.materialShininess, 1, &groundShine);
 
     // draw a larger ground plane by translating a single quad across a grid
+    /*
     for(int i = -10; i <= 10; i++) {
         for(int j = -10; j <= 10; j++) {
             modelMatrix = glm::translate(glm::mat4(1.0f), glm::vec3(i, 0, j));
@@ -1022,14 +963,21 @@ void renderScene( glm::mat4 viewMatrix, glm::mat4 projectionMatrix ) {
             glDrawElements( GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, (void*)0 );
         }
     }
+*/
 
+    gouradShaderProgram->useProgram();
 
-    //temp:
     SetupSuckable(myTeapot, viewMatrix, projectionMatrix);
     CSCI441::drawSolidTeapot( 2.0f );
     SetupSuckable(myCube, viewMatrix, projectionMatrix);
     CSCI441::drawSolidCube(1);
-    SetupSuckable(mySuzanne, viewMatrix, projectionMatrix);
+    SetupSuckable(myBulb, viewMatrix, projectionMatrix);
+    //before we draw bulb, let's set the point light position:
+    glUniform3fv(gouradShaderProgramUniforms.lightPos, 1, &myBulb.transform.position[0]);
+    //now, let's actually use a different shader for the bulb:
+    //flatShaderProgram->useProgram();
+    //glUniformMatrix4fv(flatShaderProgramUniforms.mvpMatrix, 1, GLU_FALSE, &myBulb.transform.getMatrix()[0][0]);
+    //glUniform3fv(flatShaderProgramUniforms.color, 1, &myBulb.color[0]);
     model->draw( vpos_attrib_location );
 
     particleSystem.draw(viewMatrix, projectionMatrix);
@@ -1137,26 +1085,14 @@ void run(GLFWwindow* window) {
         glm::mat4 projectionMatrix = glm::perspective( 45.0f, (GLfloat) WINDOW_WIDTH / (GLfloat) WINDOW_HEIGHT, 0.001f, 100.0f );
 
         // set up our look at matrix to position our camera
-        if(arcBallChoice) {
-            arcballCam.eyePos = arcballCam.lookAtPoint + arcballCam.camDir * arcballCam.cameraAngles.z;
-            glm::mat4 viewMatrix = glm::lookAt(arcballCam.eyePos,
-                                               arcballCam.lookAtPoint,
-                                               arcballCam.upVector);
+        arcballCam.eyePos = arcballCam.lookAtPoint + arcballCam.camDir * arcballCam.cameraAngles.z;
+        glm::mat4 viewMatrix = glm::lookAt( arcballCam.eyePos,
+                                            arcballCam.lookAtPoint,
+                                            arcballCam.upVector );
 
-            fountainShaderUniforms.eyePos = arcballCam.eyePos;
-            fountainShaderUniforms.lookAtPoint = arcballCam.lookAtPoint;
-            particleSystem.setCameraVariables(arcballCam.lookAtPoint, arcballCam.eyePos);
-        }
-        else{
-            freeCam.eyePos = freeCam.lookAtPoint + freeCam.camDir * freeCam.cameraAngles.z;
-            glm::mat4 viewMatrix = glm::lookAt(freeCam.eyePos,
-                                               freeCam.lookAtPoint,
-                                               freeCam.upVector);
-
-            fountainShaderUniforms.eyePos = freeCam.eyePos;
-            fountainShaderUniforms.lookAtPoint = freeCam.lookAtPoint;
-            particleSystem.setCameraVariables(freeCam.lookAtPoint, freeCam.eyePos);
-        }
+        fountainShaderUniforms.eyePos = arcballCam.eyePos;
+        fountainShaderUniforms.lookAtPoint = arcballCam.lookAtPoint;
+        particleSystem.setCameraVariables(arcballCam.lookAtPoint, arcballCam.eyePos);
 
         // draw everything to the window
         // pass our view and projection matrices
