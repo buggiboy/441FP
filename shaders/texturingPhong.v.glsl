@@ -20,7 +20,7 @@ const vec3 LIGHT_POSITION = vec3( 10.0, 10.0, 10.0 );
 
 void main() {
     vec3 posMod = 1/length(vPos - blackHolePos) * normalize(vPos - blackHolePos);
-    vec3 actualPos = vPos + posMod;
+    vec3 actualPos = vPos - posMod;
     gl_Position = mvpMtx * vec4(actualPos, 1.0) ;
     texCoord = vTexCoord;
 
