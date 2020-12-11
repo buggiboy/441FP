@@ -14,7 +14,7 @@ uniform vec3 materialSpecColor;         // the material specular color
 uniform float materialShininess;        // the material shininess value
 uniform vec3 materialAmbColor;          // the material ambient color
 uniform int lightType;                  // 0 - point light, 1 - directional light, 2 - spotlight
-
+uniform vec3 pointLightPos;
 // attribute inputs
 layout(location = 0) in vec3 vPos;      // the position of this specific vertex in object space
 layout(location = 1) in vec3 vNormal;   // the normal of this specific vertex in object space
@@ -29,8 +29,12 @@ vec3 diffuseColor(vec3 vertexPosition, vec3 vertexNormal) {
     if(lightType == 1) {
         lightVector = normalize( -lightDir );
     }
-    // spot light or point light
-    else {
+    //  point light
+    else if(lightType==3) {
+        lightVector = normalize(pointLightPos - vertexPosition);
+    }
+    //spot light
+    else  {
         lightVector = normalize(lightPos - vertexPosition);
     }
 
@@ -55,9 +59,13 @@ vec3 specularColor(vec3 vertexPosition, vec3 vertexNormal) {
         lightVector = normalize( -lightDir );
     }
     // spot light or point light
-    else {
+    else if(lightType==3){
+        lightVector = normalize(pointLightPos - vertexPosition);
+    }
+    else{
         lightVector = normalize(lightPos - vertexPosition);
     }
+
 
     vec3 viewVector = normalize(eyePos - vertexPosition);
     vec3 halfwayVector = normalize(viewVector + lightVector);
