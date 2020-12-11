@@ -85,7 +85,13 @@ vec3 specularColor(vec3 vertexPosition, vec3 vertexNormal) {
 
 void main() {
     // transform & output the vertex in clip space
-    gl_Position = mvpMatrix * vec4(vPos, 1.0);
+    
+    // modifies the position based on proximity to black hole
+    vec3 posMod = 1/length(vPos - pointLightPos) * normalize(vPos - pointLightPos);
+    vec3 actualPos = vPos - posMod;
+    //modifies the position based on proximity to black hole
+    
+    gl_Position = mvpMatrix * vec4(actualPos, 1.0);
 
     // transform vertex information to world space
     vec3 vPosWorld = (modelMatrix * vec4(vPos, 1.0)).xyz;
